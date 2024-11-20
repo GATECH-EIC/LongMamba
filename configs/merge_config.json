@@ -1,0 +1,12 @@
+{
+    "model_arch": "deci",
+    "base_model": "state-spaces/mamba-1.4b",
+    "save_para4debug": false,
+    "seed": 123,
+    "b": 1,
+    "c": 1,
+    "longbench_dataset": "none",
+    "leval_dataset": "none",
+    "deci_dataset": "none",
+    "our_method": "channelwise_alpha"
+}

@@ -1,0 +1,19 @@
+{
+    "niah_needle_depths_eval": [0, 0.25, 0.5, 0.75, 1],
+    "niah_context_lens_eval": [1000, 2000, 4000, 8000, 16000, 32000, 64000, 96000, 128000, 160000, 192000],
+    
+    "ppl_test_num_windows_per_context_len_eval": 10,
+    "ppl_test_context_lens_eval": [1000, 2000, 4000, 10000, 20000, 30000, 40000, 50000, 60000],
+    "ppl_test_pred_len": 100,
+    "deci_num_chunks": 1,
+
+    "multidoc_num_noise_docs_train": 11,
+    "multidoc_num_noise_docs_eval": [10, 20, 40, 80, 120, 160, 200, 300],
+    "multidoc_noise_injection_policy": "random_loc",
+
+    "decimation_type": "max_p",
+    "decimation_beta": 0.5,
+    "decimating_layers": [12],
+    "decimation_min_seq_len": 20,
+    "decimation_max_p_L_base": 2000
+}   
