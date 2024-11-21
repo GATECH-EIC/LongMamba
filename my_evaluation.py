@@ -981,8 +981,6 @@ def deci_pg19(model, model_processor, model_name, merge_config):
         trg_len = config['ppl_test_pred_len']
         print(f'testing perplexity with context length of {window_size}, windows per sample = {max_amount_of_windows}, {trg_len} labels per window')
         for i, sample in enumerate(tqdm(dataset_val)):
-            if i >1:
-                continue
             seq_len = sample['input_ids'].size(1)
             if seq_len < window_size:
                 print(f'skipping sample {i}, seq_len = {seq_len//1000}K < window_size = {window_size//1000}K')
