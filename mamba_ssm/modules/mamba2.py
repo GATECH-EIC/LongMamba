@@ -18,6 +18,8 @@ try:
 except ImportError:
     selective_state_update = None
 
+from mamba_ssm.ops.selective_scan_interface import get_top_k_token_indices, get_topk_mask_channelwise, get_channelwise_topAlpha, get_channelwise_topBound, get_channelwise_offline, get_channelwise_normalize, get_channelwise_dt_threshold
+
 from mamba_ssm.ops.triton.layernorm_gated import RMSNorm as RMSNormGated
 
 from mamba_ssm.distributed.tensor_parallel import ColumnParallelLinear, RowParallelLinear
@@ -143,6 +145,7 @@ class Mamba2(nn.Module):
             self.out_proj = RowParallelLinear(self.d_inner * self.world_size, self.d_model, bias=bias,
                                               process_group=self.process_group, sequence_parallel=self.sequence_parallel,
                                               **factory_kwargs)
+        self.dt_thre = {}
 
     def forward(self, u, seqlen=None, seq_idx=None, inference_params=None):
         """
@@ -160,12 +163,13 @@ class Mamba2(nn.Module):
             batch = batch_seqlen // seqlen
 
         conv_state, ssm_state = None, None
+        params_for_debug = None
         if inference_params is not None:
             conv_state, ssm_state = self._get_states_from_cache(inference_params, batch)
             if inference_params.seqlen_offset > 0:
                 # The states are updated inplace
                 out, _, _ = self.step(u, conv_state, ssm_state)
-                return out
+                return out, params_for_debug
 
         zxbcdt = self.in_proj(u)  # (B, L, d_in_proj) or (B * L, d_in_proj)
         if seqlen_og is not None:
@@ -174,6 +178,7 @@ class Mamba2(nn.Module):
         A = -torch.exp(self.A_log.float())  # (nheads) or (d_inner, d_state)
         dt_limit_kwargs = {} if self.dt_limit == (0.0, float("inf")) else dict(dt_limit=self.dt_limit)
         if self.use_mem_eff_path and inference_params is None:
+            assert False, "no fast path for longmamba yet"
             out = mamba_split_conv1d_scan_combined(
                 zxbcdt,
                 rearrange(self.conv1d.weight, "d 1 w -> d w"),
@@ -223,6 +228,85 @@ class Mamba2(nn.Module):
                     activation=self.activation,
                 ).transpose(1, 2)
             x, B, C = torch.split(xBC, [self.d_ssm, self.ngroups * self.d_state, self.ngroups * self.d_state], dim=-1)
+
+            # dt alignment
+            dt = F.softplus(dt + self.dt_bias)
+
+            if inference_params.merge_config is not None and inference_params.merge_config['model_arch'] == "ours" and seqlen > 3000:
+                channel_threshold = inference_params.merge_config['c']
+                # whether_bound = ("bound" in inference_params.merge_config['our_method']) or ("norm" in inference_params.merge_config['our_method'])
+                tA_prod_path = f"/data/kxia2/mamba/artifacts/{inference_params.merge_config['align_path']}/tA_prod/tA_prod_layer_{self.layer_idx}.pt"
+                alpha_path = f"/data/kxia2/mamba/artifacts/{inference_params.merge_config['align_path']}/alpha/alpha_layer_{self.layer_idx}.pt"
+                decay_path = f"/data/kxia2/mamba/artifacts/{inference_params.merge_config['align_path']}/decay/decay_layer_{self.layer_idx}.pt"
+                dt_thre_path = f"/data/kxia2/mamba/artifacts/{inference_params.merge_config['align_path']}/delta_t-thre/delta_t-thre_layer_{self.layer_idx}.pt"
+
+                tA_prod = torch.load(tA_prod_path, map_location=dt.device)
+                self.channel_mask = tA_prod > channel_threshold
+                whether_mask = self.channel_mask.sum() != 0
+
+                available_values = []
+                if inference_params.merge_config['our_method'] in ["alpha", "offline"]:
+                    alpha_all = torch.load(alpha_path, map_location=dt.device)
+                    for k in alpha_all:
+                        available_values.append(int(k[:-1])*1e3)
+                elif inference_params.merge_config['our_method'] in ["bound", "norm"]:  
+                    decay = torch.load(decay_path, map_location=dt.device)
+                elif inference_params.merge_config['our_method'] in ["dt_thre"]:
+                    dt_thre_all = torch.load(dt_thre_path, map_location=dt.device)
+                    for k in dt_thre_all:
+                        available_values.append(int(k[:-1])*1e3)
+                    
+                self.slow_factor = 0
+                self.topk = 2000
+                dt = rearrange(dt, "b l h -> b h l")
+                if inference_params.merge_config['our_method'] == "channelwise_topk" and whether_mask: 
+                    topk_mask = get_topk_mask_channelwise(delta_t=dt[:, self.channel_mask], k=self.topk)
+                    dt[:, self.channel_mask] = torch.where(topk_mask, dt[:, self.channel_mask], dt[:, self.channel_mask] * self.slow_factor)
+                elif inference_params.merge_config['our_method'] == "all_topk" and whether_mask:
+                    topk_indice = get_top_k_token_indices(dt[:, self.channel_mask], k=self.topk)
+                    topk_mask = torch.zeros_like(dt[:, self.channel_mask], dtype=torch.bool)
+                    topk_mask[:,:,topk_indice] = True
+                    dt[:, self.channel_mask] = torch.where(topk_mask, dt[:, self.channel_mask], dt[:, self.channel_mask] * self.slow_factor)
+
+                elif whether_mask and inference_params.merge_config['b'] != 0: 
+                    # available_values = [1e3, 2e3, 3e3, 4e3, 5e3, 6e3, 7e3, 8e3, 10e3, 12e3, 14e3, 16e3, 20e3, 24e3, 30e3, 36e3, 44e3, 54e3, 64e3, 80e3, 96e3, 120e3, 144e3]
+                    key_num = int(min(available_values, key=lambda x: abs(seqlen - x))/1e3) if available_values != [] else None
+                    if "alpha" in inference_params.merge_config['our_method']:
+                        channel_alpha = alpha_all[f"{key_num}k"].to(dt.device)
+                        topk_mask = get_channelwise_topAlpha(delta_t=dt[:, self.channel_mask], alpha=channel_alpha[self.channel_mask]*inference_params.merge_config['b'])
+                        dt[:, self.channel_mask] = torch.where(topk_mask, dt[:, self.channel_mask], dt[:, self.channel_mask] * self.slow_factor)
+                    elif "offline" in inference_params.merge_config['our_method']:
+                        key_num_offline = int(min(available_values, key=lambda x: abs(seqlen - x))/1e3)
+                        channel_alpha = alpha_all[f"{key_num_offline}k"].to(dt.device)
+                        topk_mask, dt_thre = get_channelwise_offline(delta_t=dt[:, self.channel_mask], alpha=channel_alpha[self.channel_mask]*inference_params.merge_config['b'])
+                        # self.dt_thre[f"layer_{self.layer_idx}"] = dt_thre
+                        dt[:, self.channel_mask] = torch.where(topk_mask, dt[:, self.channel_mask], dt[:, self.channel_mask] * self.slow_factor)
+                    elif "bound" in inference_params.merge_config['our_method']:
+                        topk_mask = get_channelwise_topBound(delta_t=dt[:, self.channel_mask], decay=decay[self.channel_mask]*inference_params.merge_config['b'])
+                        dt[:, self.channel_mask] = torch.where(topk_mask, dt[:, self.channel_mask], dt[:, self.channel_mask] * self.slow_factor)
+                    elif "norm" in inference_params.merge_config['our_method']:
+                        dt_norm = get_channelwise_normalize(delta_t=dt[:, self.channel_mask], decay=decay[self.channel_mask]*inference_params.merge_config['b'])
+                        dt[:, self.channel_mask] = dt_norm
+                    elif "dt_thre" in inference_params.merge_config['our_method']:
+                        channel_dt_thre_all = dt_thre_all[f"{key_num}k"].to(dt.device)
+                        # self.dt_thre[f"layer_{self.layer_idx}"] = channel_dt_thre_all
+                        topk_mask = get_channelwise_dt_threshold(delta_t=dt[:, self.channel_mask], dt_thre=channel_dt_thre_all[self.channel_mask]*inference_params.merge_config['b'])
+                        dt[:, self.channel_mask] = torch.where(topk_mask, dt[:, self.channel_mask], dt[:, self.channel_mask] * self.slow_factor)
+
+                else:
+                    if whether_mask:
+                        print("Warning: no method is applied")
+                    dt[:, self.channel_mask] = dt[:, self.channel_mask] * 0
+                dt = rearrange(dt, "b h l -> b l h")
+
+            params_for_debug = {}
+            if inference_params.merge_config['save_para4debug']:
+                params_for_debug['A'] = A.clone().cpu()
+                params_for_debug['Sb_x'] = B.clone().cpu()  # B before discretization
+                params_for_debug['C'] = C.clone().cpu()
+                params_for_debug['delta_t'] = F.softplus(dt.clone() + self.dt_bias.clone()).cpu()
+                params_for_debug['B_t'] = None
+
             y = mamba_chunk_scan_combined(
                 rearrange(x, "b l (h p) -> b l h p", p=self.headdim),
                 dt,
@@ -232,8 +316,8 @@ class Mamba2(nn.Module):
                 chunk_size=self.chunk_size,
                 D=rearrange(self.D, "(h p) -> h p", p=self.headdim) if self.D_has_hdim else self.D,
                 z=rearrange(z, "b l (h p) -> b l h p", p=self.headdim) if not self.rmsnorm else None,
-                dt_bias=self.dt_bias,
-                dt_softplus=True,
+                dt_bias=None,
+                dt_softplus=False,
                 seq_idx=seq_idx,
                 **dt_limit_kwargs,
                 return_final_states=ssm_state is not None,
@@ -249,7 +333,7 @@ class Mamba2(nn.Module):
             if seqlen_og is not None:
                 y = rearrange(y, "b l d -> (b l) d")
             out = self.out_proj(y)
-        return out
+        return out, params_for_debug
 
     def step(self, hidden_states, conv_state, ssm_state):
         dtype = hidden_states.dtype

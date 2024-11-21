@@ -26,6 +26,32 @@ except ImportError:
     RMSNorm, layer_norm_fn, rms_norm_fn = None, None, None
 
 
+def init_params_for_debug(is_none_init=True):
+    if is_none_init:
+        return None
+    
+    params_for_debug = {}
+    params_for_debug['A'] = []
+    params_for_debug['Sb_x'] = []
+    params_for_debug['C'] = []
+    params_for_debug['delta_t'] = []
+    params_for_debug['B_t'] = []
+    return params_for_debug
+
+def update_params_for_debug(params_for_debug, cur_params_for_debug, decimation_config=None):
+    if params_for_debug is not None and cur_params_for_debug is not None:
+        try:
+            params_for_debug['A'].append(cur_params_for_debug['A'])
+            params_for_debug['Sb_x'].append(cur_params_for_debug['Sb_x'])
+            params_for_debug['C'].append(cur_params_for_debug['C'])
+            params_for_debug['delta_t'].append(cur_params_for_debug['delta_t'])
+            params_for_debug['B_t'].append(cur_params_for_debug['B_t'])
+        except:
+            pass
+
+    return params_for_debug
+
+
 def create_block(
     d_model,
     d_intermediate,
@@ -134,6 +160,8 @@ class MixerModel(nn.Module):
         dtype=None,
     ) -> None:
         factory_kwargs = {"device": device, "dtype": dtype}
+        self.device = device
+        self.dtype = dtype
         super().__init__()
         self.residual_in_fp32 = residual_in_fp32
 
@@ -190,10 +218,13 @@ class MixerModel(nn.Module):
     def forward(self, input_ids, inference_params=None, **mixer_kwargs):
         hidden_states = self.embedding(input_ids)
         residual = None
+        params_for_debug = init_params_for_debug(False)
         for layer in self.layers:
-            hidden_states, residual = layer(
+            hidden_states, residual, cur_params_for_debug = layer(
                 hidden_states, residual, inference_params=inference_params
             )
+            params_for_debug = update_params_for_debug(params_for_debug, cur_params_for_debug)
+
         if not self.fused_add_norm:
             residual = (hidden_states + residual) if residual is not None else hidden_states
             hidden_states = self.norm_f(residual.to(dtype=self.norm_f.weight.dtype))
@@ -209,7 +240,7 @@ class MixerModel(nn.Module):
                 residual_in_fp32=self.residual_in_fp32,
                 is_rms_norm=isinstance(self.norm_f, RMSNorm)
             )
-        return hidden_states
+        return hidden_states, params_for_debug
 
 
 class MambaLMHeadModel(nn.Module, GenerationMixin):
@@ -221,6 +252,8 @@ class MambaLMHeadModel(nn.Module, GenerationMixin):
         device=None,
         dtype=None,
     ) -> None:
+        self.device = device
+        self.dtype = dtype
         self.config = config
         d_model = config.d_model
         n_layer = config.n_layer
@@ -276,12 +309,12 @@ class MambaLMHeadModel(nn.Module, GenerationMixin):
         "position_ids" is just to be compatible with Transformer generation. We don't use it.
         num_last_tokens: if > 0, only return the logits for the last n tokens
         """
-        hidden_states = self.backbone(input_ids, inference_params=inference_params, **mixer_kwargs)
+        hidden_states, params_for_debug = self.backbone(input_ids, inference_params=inference_params, **mixer_kwargs)
         if num_last_tokens > 0:
             hidden_states = hidden_states[:, -num_last_tokens:]
         lm_logits = self.lm_head(hidden_states)
         CausalLMOutput = namedtuple("CausalLMOutput", ["logits"])
-        return CausalLMOutput(logits=lm_logits)
+        return CausalLMOutput(logits=lm_logits), params_for_debug
 
     @classmethod
     def from_pretrained(cls, pretrained_model_name, device=None, dtype=None, **kwargs):

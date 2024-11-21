@@ -25,6 +25,7 @@ class InferenceParams:
     batch_size_offset: int = 0
     key_value_memory_dict: dict = field(default_factory=dict)
     lengths_per_sample: Optional[Tensor] = None
+    merge_config: dict = None
 
     def reset(self, max_seqlen, max_batch_size):
         self.max_seqlen = max_seqlen
@@ -32,6 +33,28 @@ class InferenceParams:
         self.seqlen_offset = 0
         if self.lengths_per_sample is not None:
             self.lengths_per_sample.zero_()
+
+
+def init_params_for_debug(is_none_init=True):
+    if is_none_init:
+        return None
+    
+    params_for_debug = {}
+    params_for_debug['A'] = []
+    params_for_debug['Sb_x'] = []
+    params_for_debug['C'] = []
+    params_for_debug['delta_t'] = []
+    params_for_debug['B_t'] = []
+    return params_for_debug
+
+def update_params_for_debug(params_for_debug, cur_params_for_debug):
+    if params_for_debug is not None:
+        params_for_debug['A'].append(cur_params_for_debug['A'])
+        params_for_debug['Sb_x'].append(cur_params_for_debug['Sb_x'])
+        params_for_debug['C'].append(cur_params_for_debug['C'])
+        params_for_debug['delta_t'].append(cur_params_for_debug['delta_t'])
+        params_for_debug['B_t'].append(cur_params_for_debug['B_t'])
+    return params_for_debug
 
 
 def modify_logits_for_min_p_filtering(logits, min_p):
@@ -126,6 +149,7 @@ def decode(
     top_p=0.0,
     min_p=0.0,
     temperature=1.0,
+    merge_config=None,
     repetition_penalty=1.0,
     eos_token_id=None,
     teacher_outputs=None,
@@ -167,7 +191,10 @@ def decode(
         inference_params = model._decoding_cache.inference_params
         inference_params.reset(max_length, batch_size)
     else:
-        inference_params = InferenceParams(max_seqlen=max_length, max_batch_size=batch_size)
+        if merge_config is not None:
+            inference_params = InferenceParams(max_seqlen=max_length, max_batch_size=batch_size, merge_config=merge_config)
+        else:
+            inference_params = InferenceParams(max_seqlen=max_length, max_batch_size=batch_size)
 
     def get_logits(input_ids, inference_params):
         decoding = inference_params.seqlen_offset > 0
@@ -181,17 +208,19 @@ def decode(
         else:
             position_ids = None
         if not cg or not decoding:
-            logits = model(
+            logits, params_for_debug = model(
                 input_ids,
                 position_ids=position_ids,
                 inference_params=inference_params,
                 num_last_tokens=1,
-            ).logits.squeeze(dim=1)
+            )
+            logits = logits.logits.squeeze(dim=1)
         else:
             logits = model._decoding_cache.run(
                 input_ids, position_ids, inference_params.seqlen_offset
             ).squeeze(dim=1)
-        return logits[..., :vocab_size] if vocab_size is not None else logits
+        return_logits = logits[..., :vocab_size] if vocab_size is not None else logits
+        return return_logits, params_for_debug
 
     def sample_tokens(logits, inference_params):
         if teacher_outputs is None or teacher_output_len <= inference_params.seqlen_offset:
@@ -201,10 +230,19 @@ def decode(
         # return rearrange(token, "b -> b 1")
         return token.unsqueeze(1)
 
+    # def should_stop(current_token, inference_params):
+    #     if inference_params.seqlen_offset == 0:
+    #         return False
+    #     if eos_token_id is not None and (current_token == eos_token_id).all():
+    #         return True
+    #     if inference_params.seqlen_offset >= max_length - 1:
+    #         return True
+    #     return False
+
     def should_stop(current_token, inference_params):
         if inference_params.seqlen_offset == 0:
             return False
-        if eos_token_id is not None and (current_token == eos_token_id).all():
+        if eos_token_id is not None and (current_token in eos_token_id):
             return True
         if inference_params.seqlen_offset >= max_length - 1:
             return True
@@ -213,13 +251,18 @@ def decode(
     start = torch.cuda.Event(enable_timing=enable_timing)
     end = torch.cuda.Event(enable_timing=enable_timing)
 
+    params_for_debug = init_params_for_debug(False)
+
     if enable_timing:
         start.record()
     scores, sequences = [], [input_ids]
     sequences_cat = input_ids
     while not should_stop(sequences[-1], inference_params):
-        scores.append(get_logits(sequences[-1], inference_params))
+        returned_logits, cur_params_for_debug = get_logits(sequences[-1], inference_params)
+        params_for_debug = update_params_for_debug(params_for_debug, cur_params_for_debug)
+        scores.append(returned_logits)
         inference_params.seqlen_offset += sequences[-1].shape[1]
+
         if repetition_penalty == 1.0:
             sampled_tokens = sample_tokens(scores[-1], inference_params)
         else:
@@ -238,7 +281,7 @@ def decode(
         torch.cuda.synchronize()
         print(f"Prompt processing + decoding time: {(start.elapsed_time(end)):.0f}ms")
     output_cls = GreedySearchDecoderOnlyOutput if top_k == 1 else SampleDecoderOnlyOutput
-    return output_cls(sequences=torch.cat(sequences, dim=1), scores=tuple(scores))
+    return output_cls(sequences=torch.cat(sequences, dim=1), scores=tuple(scores)), params_for_debug
 
 
 class GenerationMixin:
@@ -255,14 +298,25 @@ class GenerationMixin:
         temperature=1.0,
         return_dict_in_generate=False,
         output_scores=False,
+        merge_config=None,
+        stopping_criteria=None,
+        pad_token_id=None,
+        use_cache=None,
+        attention_mask=None,
+        do_sample=None,
+        dataset_name=None,
+        eos_token_id=None,
         **kwargs,
     ):
-        output = decode(
-            input_ids, self, max_length, top_k=top_k, top_p=top_p, min_p = min_p, temperature=temperature, **kwargs
+        output, params_for_debug = decode(
+            input_ids, self, max_length, top_k=top_k, top_p=top_p, min_p = min_p, temperature=temperature, merge_config=merge_config, eos_token_id=eos_token_id, **kwargs
         )
         if not output_scores:
             output.scores = None
-        return output if return_dict_in_generate else output.sequences
+        else:
+            return output.scores
+        returned_output = output if return_dict_in_generate else output.sequences
+        return returned_output, params_for_debug
 
 
 @dataclass

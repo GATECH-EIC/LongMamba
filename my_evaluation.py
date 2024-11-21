@@ -1,6 +1,6 @@
-import lm_eval
-from lm_eval.models.huggingface import HFLM
-from mamba_ssm.models.mixer_seq_simple import MambaLMHeadModel, DecimatingMambaModel
+# import lm_eval
+# from lm_eval.models.huggingface import HFLM
+from mamba_ssm.models.mixer_seq_simple import MambaLMHeadModel
 from mamba_ssm.utils.generation import InferenceParams
 
 from transformers import AutoTokenizer, LlamaTokenizer, LlamaForCausalLM, AutoModelForCausalLM
@@ -26,6 +26,8 @@ from custom_datasets.pg19 import *
 import pickle
 import argparse
 from tabulate import tabulate
+from einops import rearrange, repeat
+import torch.nn.functional as F
 
 from submodules.babilong.babilong_utils import TaskDatasetCustom, SentenceSampler, NoiseInjectionDataset
 
@@ -305,11 +307,11 @@ def longbench_pred(args, model, tokenizer, model_name, merge_config):
     mp.set_start_method('spawn', force=True)
     world_size = torch.cuda.device_count()
 
-    model2path = json.load(open("/data/kxia2/ModMamba/configs/model2path.json", "r"))
-    model2maxlen = json.load(open("/data/kxia2/ModMamba/configs/model2maxlen.json", "r"))
+    model2path = json.load(open("/data/kxia2/mamba/configs/model2path.json", "r"))
+    model2maxlen = json.load(open("/data/kxia2/mamba/configs/model2maxlen.json", "r"))
     device = f'cuda:{args.device}'
 
-    if "mamba-1.4b" in model_name:
+    if "mamba" in model_name:
         max_length = model2maxlen["mamba-1.4b"]
     elif "opt" in model_name: 
         max_length = model2maxlen["opt-125m"]
@@ -324,8 +326,8 @@ def longbench_pred(args, model, tokenizer, model_name, merge_config):
                     "dureader", "gov_report", "qmsum", "multi_news", "vcsum", "trec", "triviaqa", "samsum", "lsht", \
                     "passage_count", "passage_retrieval_en", "passage_retrieval_zh", "lcc", "repobench-p"]
     # we design specific prompt format and max generation length for each task, feel free to modify them to optimize model output
-    dataset2prompt = json.load(open("/data/kxia2/ModMamba/configs/dataset2prompt.json", "r"))
-    dataset2maxlen = json.load(open("/data/kxia2/ModMamba/configs/dataset2maxlen.json", "r"))
+    dataset2prompt = json.load(open("/data/kxia2/mamba/configs/dataset2prompt.json", "r"))
+    dataset2maxlen = json.load(open("/data/kxia2/mamba/configs/dataset2maxlen.json", "r"))
     
     if merge_config['model_arch'] == "ours":
         model_name += f"_{args.align_path}-{args.b}-{args.c}-{args.our_method}"
@@ -777,10 +779,10 @@ def deci_niah_debug(model, model_processor, model_name, merge_config, random_see
                                     do_sample=False, use_cache=True,
                                     eos_token_id=[model_processor.eos_token_id])
         dataset_name = "niah"    
-        os.makedirs(f'/data/kxia2/ModMamba/artifacts/{model_name}-{dataset_name}{idx:02d}/decay', exist_ok=True)
-        os.makedirs(f'/data/kxia2/ModMamba/artifacts/{model_name}-{dataset_name}{idx:02d}/delta_t-thre', exist_ok=True)
-        os.makedirs(f'/data/kxia2/ModMamba/artifacts/{model_name}-{dataset_name}{idx:02d}/alpha', exist_ok=True)
-        os.makedirs(f'/data/kxia2/ModMamba/artifacts/{model_name}-{dataset_name}{idx:02d}/tA_prod', exist_ok=True)
+        os.makedirs(f'/data/kxia2/mamba/artifacts/{model_name}-{dataset_name}{idx:02d}/decay', exist_ok=True)
+        os.makedirs(f'/data/kxia2/mamba/artifacts/{model_name}-{dataset_name}{idx:02d}/delta_t-thre', exist_ok=True)
+        os.makedirs(f'/data/kxia2/mamba/artifacts/{model_name}-{dataset_name}{idx:02d}/alpha', exist_ok=True)
+        os.makedirs(f'/data/kxia2/mamba/artifacts/{model_name}-{dataset_name}{idx:02d}/tA_prod', exist_ok=True)
         
         for key in record:
             if key != "B_t": record[key] = torch.stack([attr for attr in record[key][0]])
@@ -791,13 +793,13 @@ def deci_niah_debug(model, model_processor, model_name, merge_config, random_see
         for layer in tqdm(range(layer_cnt)):
             tA = torch.exp(torch.einsum('hs,hd->hsd', record['delta_t'][layer][0], record['A'][layer])).mean(dim=-1)
             tA_prod = torch.prod(tA, dim=-1)
-            torch.save(tA_prod, f"/data/kxia2/ModMamba/artifacts/{model_name}-{dataset_name}{idx:02d}/tA_prod/tA_prod_layer_{layer}.pt")
+            torch.save(tA_prod, f"/data/kxia2/mamba/artifacts/{model_name}-{dataset_name}{idx:02d}/tA_prod/tA_prod_layer_{layer}.pt")
             dt_sum_channels = []
             for i in range(C):
                 dt_sum = torch.sum(record['delta_t'][layer][0][i])
                 dt_sum_channels.append(dt_sum)
             # dt_sum_all.append(dt_sum_channels)
-            torch.save(torch.stack(dt_sum_channels), f"/data/kxia2/ModMamba/artifacts/{model_name}-{dataset_name}{idx:02d}/decay/decay_layer_{layer}.pt")
+            torch.save(torch.stack(dt_sum_channels), f"/data/kxia2/mamba/artifacts/{model_name}-{dataset_name}{idx:02d}/decay/decay_layer_{layer}.pt")
 
             alpha_all = {}
             delta_thre_all = {}
@@ -819,8 +821,8 @@ def deci_niah_debug(model, model_processor, model_name, merge_config, random_see
 
                     alpha_all[f"{int(length/1e3)}k"] = alpha
                     delta_thre_all[f"{int(length/1e3)}k"] = delta_thre
-            torch.save(alpha_all, f"/data/kxia2/ModMamba/artifacts/{model_name}-{dataset_name}{idx:02d}/alpha/alpha_layer_{layer}.pt")
-            torch.save(delta_thre_all, f"/data/kxia2/ModMamba/artifacts/{model_name}-{dataset_name}{idx:02d}/delta_t-thre/delta_t-thre_layer_{layer}.pt")
+            torch.save(alpha_all, f"/data/kxia2/mamba/artifacts/{model_name}-{dataset_name}{idx:02d}/alpha/alpha_layer_{layer}.pt")
+            torch.save(delta_thre_all, f"/data/kxia2/mamba/artifacts/{model_name}-{dataset_name}{idx:02d}/delta_t-thre/delta_t-thre_layer_{layer}.pt")
     exit()
 
 def doc_ret(model, model_processor, model_name, merge_config):
@@ -1079,7 +1081,7 @@ def special_input_ppl(config, args):
     #     length = [1e3, 2e3, 4e3, 8e3, 12e3, 16e3, 20e3, 24e3, 30e3, 36e3, 42e3, 48e3, 56e3, 64e3, 72e3, 84e3]
     # else:
     #     length = [1e3, 2e3, 4e3, 8e3, 12e3, 16e3, 20e3, 24e3, 30e3, 36e3, 42e3, 48e3, 56e3, 64e3, 72e3, 84e3, 96e3, 108e3, 120e3, 140e3, 160e3]
-    length = [8e3, 20e3, 24e3, 30e3, 36e3, 48e3, 64e3, 84e3]
+    length = [8e3, 20e3, 24e3, 30e3, 36e3, 48e3, 64e3, 84e3, 120e3]
     for window_size in length:
         window_size = int(window_size)
         nlls = []
@@ -1144,10 +1146,10 @@ def debug(config, args):
 
     samples = 5
     for idx in tqdm(range(samples)):
-        os.makedirs(f'/data/kxia2/ModMamba/artifacts/{model_name}-{dataset_name}{idx:02d}/decay', exist_ok=True)
-        os.makedirs(f'/data/kxia2/ModMamba/artifacts/{model_name}-{dataset_name}{idx:02d}/delta_t-thre', exist_ok=True)
-        os.makedirs(f'/data/kxia2/ModMamba/artifacts/{model_name}-{dataset_name}{idx:02d}/alpha', exist_ok=True)
-        os.makedirs(f'/data/kxia2/ModMamba/artifacts/{model_name}-{dataset_name}{idx:02d}/tA_prod', exist_ok=True)
+        os.makedirs(f'/data/kxia2/mamba/artifacts/{model_name}-{dataset_name}{idx:02d}/decay', exist_ok=True)
+        os.makedirs(f'/data/kxia2/mamba/artifacts/{model_name}-{dataset_name}{idx:02d}/delta_t-thre', exist_ok=True)
+        os.makedirs(f'/data/kxia2/mamba/artifacts/{model_name}-{dataset_name}{idx:02d}/alpha', exist_ok=True)
+        os.makedirs(f'/data/kxia2/mamba/artifacts/{model_name}-{dataset_name}{idx:02d}/tA_prod', exist_ok=True)
         sub_input = inputs.input_ids[:, int(prompt_length/samples*idx+10):int(prompt_length/samples*idx+2010)]
         _, record = model.generate(sub_input, 
                                 do_sample=False, 
@@ -1159,18 +1161,22 @@ def debug(config, args):
             if key != "B_t": record[key] = torch.stack([attr for attr in record[key][0]])
         # torch.save(record, f"/research/data/zhifan/kxia/artifacts/params_for_debug_{model_name}_{dataset_name}{idx:02d}.pt")
         selected_len = [1e3, 2e3, 3e3, 4e3, 5e3, 6e3, 7e3, 8e3, 10e3, 12e3, 14e3, 16e3, 20e3, 24e3, 30e3, 36e3, 44e3, 54e3, 64e3, 80e3, 96e3, 120e3, 144e3, 168e3,192e3]
+        record['delta_t'] = rearrange(record['delta_t'], "layer b l h -> layer b h l")
         C = record['delta_t'][0][0].shape[0]
         layer_cnt = record['delta_t'].shape[0]
         for layer in tqdm(range(layer_cnt)):
-            tA = torch.exp(torch.einsum('hs,hd->hsd', record['delta_t'][layer][0], record['A'][layer])).mean(dim=-1)
-            tA_prod = torch.prod(tA, dim=-1)
-            torch.save(tA_prod, f"/data/kxia2/ModMamba/artifacts/{model_name}-{dataset_name}{idx:02d}/tA_prod/tA_prod_layer_{layer}.pt")
+            # tA = torch.exp(torch.einsum('hs,hd->hsd', record['delta_t'][layer][0], record['A'][layer])).mean(dim=-1)
+            tA = rearrange(record['delta_t'][layer], "b h l -> b l h")*record['A'][layer]
+            tA = rearrange(tA, "b (c l) h -> b h c l", c=1)
+            A_cumsum = torch.cumsum(tA, dim=-1)
+            tA_prod = torch.exp(segsum(F.pad(A_cumsum[:, :, :, -1], (1, 0)), device=A_cumsum.device)[:,:,1,0]).view(-1)
+            torch.save(tA_prod, f"/data/kxia2/mamba/artifacts/{model_name}-{dataset_name}{idx:02d}/tA_prod/tA_prod_layer_{layer}.pt")
             dt_sum_channels = []
             for i in range(C):
                 dt_sum = torch.sum(record['delta_t'][layer][0][i])
                 dt_sum_channels.append(dt_sum)
             # dt_sum_all.append(dt_sum_channels)
-            torch.save(torch.stack(dt_sum_channels), f"/data/kxia2/ModMamba/artifacts/{model_name}-{dataset_name}{idx:02d}/decay/decay_layer_{layer}.pt")
+            torch.save(torch.stack(dt_sum_channels), f"/data/kxia2/mamba/artifacts/{model_name}-{dataset_name}{idx:02d}/decay/decay_layer_{layer}.pt")
 
             alpha_all = {}
             delta_thre_all = {}
@@ -1193,11 +1199,11 @@ def debug(config, args):
                     alpha_all[f"{int(length/1e3)}k"] = alpha
                     delta_thre_all[f"{int(length/1e3)}k"] = delta_thre
                     # print(alpha.shape, delta_thre.shape, mod_dt[0][top_k[0].to(torch.int)] == delta_thre[0])
-            torch.save(alpha_all, f"/data/kxia2/ModMamba/artifacts/{model_name}-{dataset_name}{idx:02d}/alpha/alpha_layer_{layer}.pt")
-            torch.save(delta_thre_all, f"/data/kxia2/ModMamba/artifacts/{model_name}-{dataset_name}{idx:02d}/delta_t-thre/delta_t-thre_layer_{layer}.pt")
+            torch.save(alpha_all, f"/data/kxia2/mamba/artifacts/{model_name}-{dataset_name}{idx:02d}/alpha/alpha_layer_{layer}.pt")
+            torch.save(delta_thre_all, f"/data/kxia2/mamba/artifacts/{model_name}-{dataset_name}{idx:02d}/delta_t-thre/delta_t-thre_layer_{layer}.pt")
     
     # compute avg align target
-    root_path = "/data/kxia2/ModMamba/artifacts"
+    root_path = "/data/kxia2/mamba/artifacts"
     ref_list = [f"{model_name}-{dataset_name}{d:02d}" for d in range(samples)]
     all_cnt = len(ref_list)
     print(all_cnt)
@@ -1240,7 +1246,23 @@ def debug(config, args):
         torch.save(avg_delta_thre, os.path.join(root_path, name, "delta_t-thre", f"delta_t-thre_layer_{layer}.pt"))
     exit()
     
-    
+
+def segsum(x, device):
+    """Stable segment sum calculation.
+
+    `exp(segsum(A))` produces a 1-semiseparable matrix, which is equivalent to a scalar SSM.
+
+    Source: https://github.com/state-spaces/mamba/blob/219f03c840d5a44e7d42e4e728134834fddccf45/mamba_ssm/modules/ssd_minimal.py#L23-L32
+    """
+    T = x.size(-1)
+    x = repeat(x, "... d -> ... d e", e=T)
+    mask = torch.tril(torch.ones(T, T, dtype=torch.bool, device=device), diagonal=-1)
+    x = x.masked_fill(~mask, 0)
+    x_segsum = torch.cumsum(x, dim=-2)
+    mask = torch.tril(torch.ones(T, T, dtype=torch.bool, device=device), diagonal=0)
+    x_segsum = x_segsum.masked_fill(~mask, -torch.inf)
+    return x_segsum
+
 
 if __name__ == '__main__':
     
@@ -1251,7 +1273,7 @@ if __name__ == '__main__':
     parser.add_argument("--model_arch", type=str, default="ours", choices=["vanilla", "ours", "deci"])
 
     # decay manipulation
-    parser.add_argument("--align_path", type=str, default="thepileavg")  # /data/kxia2/ModMamba/artifacts/ + model_name + align_path
+    parser.add_argument("--align_path", type=str, default="thepileavg")  # /data/kxia2/mamba/artifacts/ + model_name + align_path
     parser.add_argument("--our_method", type=str, default="alpha")  # alpha bound offline
     
     # for special_input_ppl()

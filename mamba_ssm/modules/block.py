@@ -64,7 +64,7 @@ class Block(nn.Module):
                 eps=self.norm.eps,
                 is_rms_norm=isinstance(self.norm, RMSNorm)
             )
-        hidden_states = self.mixer(hidden_states, inference_params=inference_params, **mixer_kwargs)
+        hidden_states, params_for_debug = self.mixer(hidden_states, inference_params=inference_params, **mixer_kwargs)
 
         if self.mlp is not None:
             if not self.fused_add_norm:
@@ -85,7 +85,7 @@ class Block(nn.Module):
                 )
             hidden_states = self.mlp(hidden_states)
 
-        return hidden_states, residual
+        return hidden_states, residual, params_for_debug
 
     def allocate_inference_cache(self, batch_size, max_seqlen, dtype=None, **kwargs):
         return self.mixer.allocate_inference_cache(batch_size, max_seqlen, dtype=dtype, **kwargs)
