@@ -80,21 +80,20 @@ def load_model(config):
         wanted_dtype = torch.float32
         model_processor = AutoTokenizer.from_pretrained("EleutherAI/gpt-neox-20b", clean_up_tokenization_spaces=True)
 
-        if config['model_arch'] == 'vanilla' or 'ours':
+        if config['model_arch'] == 'vanilla' or 'ours' or 'deci':
             mamba_model_class = MambaLMHeadModel
-        elif config['model_arch'] == 'deci':
-            mamba_model_class = DecimatingMambaModel
         else:
             raise(f'bad mamba architecture: {config["model_arch"]}')
         
-        if config['model_arch'] == 'deci':
-            decimation_config = get_decimation_config(config)
-            if config['base_model'] is not None:
-                print(f'loading model from checkpoint: {config["base_model"]}')
-                model = mamba_model_class.from_pretrained(config['base_model'], device=f'cuda:{args.device}', dtype=wanted_dtype, decimation_config=decimation_config)
-            else:
-                print(f'no base_model set, loading model from checkpoint: state-spaces/mamba-1.4b')
-                model = mamba_model_class.from_pretrained('state-spaces/mamba-1.4b', device=f'cuda:{args.device}', dtype=wanted_dtype, decimation_config=decimation_config)
+        if config['model_arch'] not in ['vanilla', 'ours', 'deci']:
+            raise(f'bad mamba architecture: {config["model_arch"]}')
+            # decimation_config = get_decimation_config(config)
+            # if config['base_model'] is not None:
+            #     print(f'loading model from checkpoint: {config["base_model"]}')
+            #     model = mamba_model_class.from_pretrained(config['base_model'], device=f'cuda:{args.device}', dtype=wanted_dtype, decimation_config=decimation_config)
+            # else:
+            #     print(f'no base_model set, loading model from checkpoint: state-spaces/mamba-1.4b')
+            #     model = mamba_model_class.from_pretrained('state-spaces/mamba-1.4b', device=f'cuda:{args.device}', dtype=wanted_dtype, decimation_config=decimation_config)
         else:
             if config['base_model'] is not None:
                 print(f'loading model from checkpoint: {config["base_model"]}')
@@ -311,7 +310,7 @@ def longbench_pred(args, model, tokenizer, model_name, merge_config):
     model2maxlen = json.load(open("/data/kxia2/mamba/configs/model2maxlen.json", "r"))
     device = f'cuda:{args.device}'
 
-    if "mamba" in model_name:
+    if "mamba" or "pythia" in model_name:
         max_length = model2maxlen["mamba-1.4b"]
     elif "opt" in model_name: 
         max_length = model2maxlen["opt-125m"]
@@ -981,7 +980,9 @@ def deci_pg19(model, model_processor, model_name, merge_config):
         nlls = []
         trg_len = config['ppl_test_pred_len']
         print(f'testing perplexity with context length of {window_size}, windows per sample = {max_amount_of_windows}, {trg_len} labels per window')
-        for i, sample in enumerate(tqdm(dataset_val)):    
+        for i, sample in enumerate(tqdm(dataset_val)):
+            if i >1:
+                continue
             seq_len = sample['input_ids'].size(1)
             if seq_len < window_size:
                 print(f'skipping sample {i}, seq_len = {seq_len//1000}K < window_size = {window_size//1000}K')
@@ -996,9 +997,14 @@ def deci_pg19(model, model_processor, model_name, merge_config):
                 with torch.no_grad():
                     target_ids = target_ids[:, -trg_len:]
                     inference_params = InferenceParams(max_seqlen=window_size+1, max_batch_size=input_ids.shape[0], merge_config=merge_config)
-                    outputs, _ = model(input_ids, num_last_tokens=trg_len+1, inference_params=inference_params)
-                    logits = outputs.logits
-                    neg_log_likelihood = ce_loss(logits.squeeze()[:-1], target_ids.squeeze())
+                    if "mamba" in model_name:
+                        outputs, _ = model(input_ids, num_last_tokens=trg_len+1, inference_params=inference_params)
+                        logits = outputs.logits
+                        neg_log_likelihood = ce_loss(logits.squeeze()[:-1], target_ids.squeeze())
+                    else:
+                        model.eval()
+                        outputs = model(input_ids, labels=input_ids)
+                        neg_log_likelihood = outputs.loss
                 nlls.append(neg_log_likelihood)
                 if end_loc == seq_len:
                     break
