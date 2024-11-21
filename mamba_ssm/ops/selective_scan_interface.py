@@ -503,5 +503,46 @@ def get_channelwise_dt_threshold(delta_t, dt_thre=None, response_length=0):
 
     return mask
 
+
+def get_non_decimated_indices(delta_t, delta_bias, response_length, layer_num=None, decimation_config=None):
+
+    activate = decimation_config['activate']
+    decimation_type = decimation_config['type']
+    beta = decimation_config['beta']
+    min_seq_length = decimation_config['min_seq_len']
+    L_base = decimation_config['L_base']
+    decimating_layers = decimation_config['decimating_layers']
+    L = delta_t.shape[2]
+    
+    if not activate:
+        not_decimated = torch.arange(L)
+        return not_decimated
+    if response_length is None: response_length=0
+    L_for_dec = L-response_length
+    if layer_num not in decimating_layers or L_for_dec == 0:
+        not_decimated = torch.arange(L)
+        return not_decimated
+
+    s = decimating_layers.index(layer_num)
+    delta_t = F.softplus(delta_t + torch.broadcast_to(delta_bias.unsqueeze(dim=0).unsqueeze(dim=2),delta_t.shape))
+    
+    if decimation_type == 'max_p':
+        if L_base == torch.inf:
+            not_decimated = torch.arange(L_for_dec)
+        else:
+            max_amount_of_tokens = L_base * (beta**s)
+            delta_t_norm = torch.norm(delta_t, p=2, dim=1)
+            delta_t_norm = delta_t_norm[:,:L_for_dec]
+            amount_to_decimate = int(np.max([np.min([L_for_dec, max_amount_of_tokens]), min_seq_length])) # we want to control the exponential decimation, we do this by limiting the minimal sequence length
+            try:
+                _, not_decimated = torch.topk(delta_t_norm, amount_to_decimate, dim=1, largest=True, sorted=False)
+                not_decimated, _ = torch.sort(not_decimated.squeeze()) # the indices are supposed to be sorted in ascending order, but there might be a bug as the last one is sometimes not
+            except:
+                print("deci topk error, k=", amount_to_decimate, "max len=", delta_t_norm.shape[1])
+                not_decimated = torch.arange(L_for_dec)
+                
+    not_decimated = torch.cat([not_decimated, torch.arange(L_for_dec,L).to(not_decimated.device)]) # add response tokens to not decimated
+    
+    return not_decimated
     
     

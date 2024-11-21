@@ -18,7 +18,7 @@ try:
 except ImportError:
     selective_state_update = None
 
-from mamba_ssm.ops.selective_scan_interface import get_top_k_token_indices, get_topk_mask_channelwise, get_channelwise_topAlpha, get_channelwise_topBound, get_channelwise_offline, get_channelwise_normalize, get_channelwise_dt_threshold
+from mamba_ssm.ops.selective_scan_interface import get_non_decimated_indices, get_top_k_token_indices, get_topk_mask_channelwise, get_channelwise_topAlpha, get_channelwise_topBound, get_channelwise_offline, get_channelwise_normalize, get_channelwise_dt_threshold
 
 from mamba_ssm.ops.triton.layernorm_gated import RMSNorm as RMSNormGated
 
@@ -230,6 +230,18 @@ class Mamba2(nn.Module):
             x, B, C = torch.split(xBC, [self.d_ssm, self.ngroups * self.d_state, self.ngroups * self.d_state], dim=-1)
 
             # dt alignment
+            params_for_debug = {}
+            if inference_params.merge_config is not None and inference_params.merge_config['model_arch'] == "deci":
+            # 'peak inside' the SSM for delta_t, and then pool w.r.t it
+                not_decimated = get_non_decimated_indices(dt, self.dt_proj.bias.float().detach().clone(), 0, layer_num=self.layer_num, decimation_config=self.decimation_config)
+                dt = dt[:,:,not_decimated]
+                B = B[:,:,not_decimated]
+                C = C[:,:,not_decimated]
+                
+                x = x[:,:,not_decimated]
+                z = z[:,:,not_decimated]
+                params_for_debug['not_decimated'] = not_decimated
+
             dt = F.softplus(dt + self.dt_bias)
 
             if inference_params.merge_config is not None and inference_params.merge_config['model_arch'] == "ours" and seqlen > 3000:
@@ -299,7 +311,6 @@ class Mamba2(nn.Module):
                     dt[:, self.channel_mask] = dt[:, self.channel_mask] * 0
                 dt = rearrange(dt, "b h l -> b l h")
 
-            params_for_debug = {}
             if inference_params.merge_config['save_para4debug']:
                 params_for_debug['A'] = A.clone().cpu()
                 params_for_debug['Sb_x'] = B.clone().cpu()  # B before discretization
