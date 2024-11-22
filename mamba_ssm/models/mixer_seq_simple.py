@@ -223,7 +223,7 @@ class MixerModel(nn.Module):
             hidden_states, residual, cur_params_for_debug = layer(
                 hidden_states, residual, inference_params=inference_params
             )
-            if cur_params_for_debug is not None and hasattr(cur_params_for_debug, "not_decimated"):
+            if cur_params_for_debug is not None and "not_decimated" in cur_params_for_debug:
                 residual = residual[:,cur_params_for_debug['not_decimated'],:]
             params_for_debug = update_params_for_debug(params_for_debug, cur_params_for_debug)
 

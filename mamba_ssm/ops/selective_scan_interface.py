@@ -504,19 +504,15 @@ def get_channelwise_dt_threshold(delta_t, dt_thre=None, response_length=0):
     return mask
 
 
-def get_non_decimated_indices(delta_t, delta_bias, response_length, layer_num=None, decimation_config=None):
+def get_non_decimated_indices(delta_t, response_length, layer_num=None, decimation_config=None):
 
-    activate = decimation_config['activate']
-    decimation_type = decimation_config['type']
-    beta = decimation_config['beta']
-    min_seq_length = decimation_config['min_seq_len']
-    L_base = decimation_config['L_base']
+    decimation_type = decimation_config['decimation_type']
+    beta = decimation_config['decimation_beta']
+    min_seq_length = decimation_config['decimation_min_seq_len']
+    L_base = decimation_config['decimation_max_p_L_base']
     decimating_layers = decimation_config['decimating_layers']
     L = delta_t.shape[2]
     
-    if not activate:
-        not_decimated = torch.arange(L)
-        return not_decimated
     if response_length is None: response_length=0
     L_for_dec = L-response_length
     if layer_num not in decimating_layers or L_for_dec == 0:
@@ -524,7 +520,6 @@ def get_non_decimated_indices(delta_t, delta_bias, response_length, layer_num=No
         return not_decimated
 
     s = decimating_layers.index(layer_num)
-    delta_t = F.softplus(delta_t + torch.broadcast_to(delta_bias.unsqueeze(dim=0).unsqueeze(dim=2),delta_t.shape))
     
     if decimation_type == 'max_p':
         if L_base == torch.inf:

@@ -166,6 +166,10 @@ def validate_config(config):
             config["decimation_max_p_L_base"] = 4000
             config["decimation_beta"] = 1
             config["decimating_layers"] = [22]
+        if "mamba2" in args.model:
+            config["decimation_max_p_L_base"] = 4000
+            config["decimation_beta"] = 1
+            config["decimating_layers"] = [6, 20, 22, 32]
 
     if config['model_arch'] == 'deci' and config['deci_dataset'] == 'ppl_test':
         config['deci_num_chunks'] = 2
@@ -185,7 +189,7 @@ def my_lm_eval(config, args=None):
     if merge_config['model_arch'] == "ours":
         model_name += f"_{args.align_path}-{args.b}-{args.c}-{args.our_method}"
     elif merge_config['model_arch'] == "deci":
-        model_name += "_deci"
+        model_name += f"_deci-{merge_config['decimation_beta']}"
     elif merge_config['model_arch'] == "vanilla":
         model_name += "_vanilla"
 
@@ -331,7 +335,7 @@ def longbench_pred(args, model, tokenizer, model_name, merge_config):
     if merge_config['model_arch'] == "ours":
         model_name += f"_{args.align_path}-{args.b}-{args.c}-{args.our_method}"
     elif merge_config['model_arch'] == "deci":
-        model_name += "_deci"
+        model_name += f"_deci-{merge_config['decimation_beta']}"
     elif merge_config['model_arch'] == "vanilla":
         model_name += "_vanilla"
     for dataset in datasets:
@@ -373,7 +377,7 @@ def my_longbench(config, args=None, only_eval=False):
     if merge_config['model_arch'] == "ours":
         model_name += f"_{args.align_path}-{args.b}-{args.c}-{args.our_method}"
     elif merge_config['model_arch'] == "deci":
-        model_name += "_deci"
+        model_name += f"_deci-{merge_config['decimation_beta']}"
     elif merge_config['model_arch'] == "vanilla":
         model_name += "_vanilla"
     if args.long_eval_task == "e":
@@ -635,7 +639,7 @@ def my_Leval(config, args=None, only_eval=False):
     if merge_config['model_arch'] == "ours":
         model_name += f"_{args.align_path}-{args.b}-{args.c}-{args.our_method}"
     elif merge_config['model_arch'] == "deci":
-        model_name += "_deci"
+        model_name += f"_deci-{merge_config['decimation_beta']}"
     elif merge_config['model_arch'] == "vanilla":
         model_name += "_vanilla"
 
@@ -993,14 +997,16 @@ def deci_pg19(model, model_processor, model_name, merge_config):
                 input_ids = sample['input_ids'][:, begin_loc:end_loc].to(config['model_device'])
                 target_ids = input_ids.clone()
                 with torch.no_grad():
-                    target_ids = target_ids[:, -trg_len:]
-                    inference_params = InferenceParams(max_seqlen=window_size+1, max_batch_size=input_ids.shape[0], merge_config=merge_config)
                     if "mamba" in model_name:
+                        target_ids = target_ids[:, -trg_len:]
+                        merge_config["resp_len"] = trg_len+1
+                        inference_params = InferenceParams(max_seqlen=window_size+1, max_batch_size=input_ids.shape[0], merge_config=merge_config)
                         outputs, _ = model(input_ids, num_last_tokens=trg_len+1, inference_params=inference_params)
                         logits = outputs.logits
                         neg_log_likelihood = ce_loss(logits.squeeze()[:-1], target_ids.squeeze())
                     else:
                         model.eval()
+                        target_ids[:, :-trg_len] = -100  # -100 no loss sign
                         outputs = model(input_ids, labels=input_ids)
                         neg_log_likelihood = outputs.loss
                 nlls.append(neg_log_likelihood)
@@ -1032,7 +1038,7 @@ def my_deci(config, args=None):
     if merge_config['model_arch'] == "ours":
         model_name += f"_{args.align_path}-{args.b}-{args.c}-{args.our_method}"
     elif merge_config['model_arch'] == "deci":
-        model_name += "_deci"
+        model_name += f"_deci-{merge_config['decimation_beta']}"
     elif merge_config['model_arch'] == "vanilla":
         model_name += "_vanilla"
 
@@ -1118,6 +1124,9 @@ def special_input_ppl(config, args):
     os.makedirs(f'pred_ppl/{args.sample_path.split(".txt")[0]}', exist_ok=True)
     if args.model_arch == "ours":
         with open(f'pred_ppl/{args.sample_path.split(".txt")[0]}/{model_name}_{args.align_path}-{args.our_method}-{args.c}.json', "w") as f:
+            json.dump(perplexities, f, ensure_ascii=False, indent=4)
+    elif args.model_arch == "deci":
+        with open(f'pred_ppl/{args.sample_path.split(".txt")[0]}/{model_name}_{args.model_arch}-{merge_config["decimation_beta"]}.json', "w") as f:
             json.dump(perplexities, f, ensure_ascii=False, indent=4)
     else:
         with open(f'pred_ppl/{args.sample_path.split(".txt")[0]}/{model_name}_{args.model_arch}.json', "w") as f:

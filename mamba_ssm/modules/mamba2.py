@@ -231,18 +231,20 @@ class Mamba2(nn.Module):
 
             # dt alignment
             params_for_debug = {}
+            dt = F.softplus(dt + self.dt_bias)
             if inference_params.merge_config is not None and inference_params.merge_config['model_arch'] == "deci":
             # 'peak inside' the SSM for delta_t, and then pool w.r.t it
-                not_decimated = get_non_decimated_indices(dt, self.dt_proj.bias.float().detach().clone(), 0, layer_num=self.layer_num, decimation_config=self.decimation_config)
+                dt, B, C, x, z = [rearrange(i, "b l h -> b h l") for i in [dt, B, C, x, z]]
+                resp_len = inference_params.merge_config["resp_len"] if "resp_len" in inference_params.merge_config else 0
+                not_decimated = get_non_decimated_indices(dt, resp_len, layer_num=self.layer_idx, decimation_config=inference_params.merge_config)
                 dt = dt[:,:,not_decimated]
                 B = B[:,:,not_decimated]
                 C = C[:,:,not_decimated]
                 
                 x = x[:,:,not_decimated]
                 z = z[:,:,not_decimated]
+                dt, B, C, x, z = [rearrange(i, "b h l -> b l h") for i in [dt, B, C, x, z]]
                 params_for_debug['not_decimated'] = not_decimated
-
-            dt = F.softplus(dt + self.dt_bias)
 
             if inference_params.merge_config is not None and inference_params.merge_config['model_arch'] == "ours" and seqlen > 3000:
                 channel_threshold = inference_params.merge_config['c']
