@@ -8,15 +8,17 @@ import torch.nn.functional as F
 
 from einops import rearrange, repeat
 
-try:
-    from causal_conv1d import causal_conv1d_fn, causal_conv1d_update
-except ImportError:
-    causal_conv1d_fn, causal_conv1d_update = None, None
+# try:
+#     from causal_conv1d import causal_conv1d_fn, causal_conv1d_update
+# except ImportError:
+#     causal_conv1d_fn, causal_conv1d_update = None, None
+from causal_conv1d import causal_conv1d_fn, causal_conv1d_update
 
-try:
-    from mamba_ssm.ops.triton.selective_state_update import selective_state_update
-except ImportError:
-    selective_state_update = None
+# try:
+#     from mamba_ssm.ops.triton.selective_state_update import selective_state_update
+# except ImportError:
+#     selective_state_update = None
+from mamba_ssm.ops.triton.selective_state_update import selective_state_update
 
 from mamba_ssm.ops.selective_scan_interface import get_non_decimated_indices, get_top_k_token_indices, get_topk_mask_channelwise, get_channelwise_topAlpha, get_channelwise_topBound, get_channelwise_offline, get_channelwise_normalize, get_channelwise_dt_threshold
 

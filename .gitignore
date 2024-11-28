@@ -33,3 +33,4 @@ multi_seq/
 hidden_state/
 subseq_*
 *mine.sh
+visualization/
