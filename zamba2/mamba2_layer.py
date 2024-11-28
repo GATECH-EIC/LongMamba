@@ -168,12 +168,13 @@ class Mamba2Layer(nn.Module):
             batch = batch_seqlen // seqlen
 
         conv_state, ssm_state = None, None
+        params_for_debug = None
         if inference_params is not None:
             conv_state, ssm_state = self._get_states_from_cache(inference_params, batch)
             if inference_params.has_previous_state:
                 # The states are updated inplace
                 out, _, _ = self.step(u, conv_state, ssm_state)
-                return out
+                return out, params_for_debug
 
         zxbcdt = self.in_proj(u)  # (B, L, d_in_proj) or (B * L, d_in_proj)
         if seqlen_og is not None:
@@ -241,6 +242,85 @@ class Mamba2Layer(nn.Module):
                 lora_output_z = self.z_lora_B(lora_output_z)
                 x = x + lora_output_x
                 z = z + lora_output_z
+            
+            # dt alignment
+            params_for_debug = {}
+            dt = F.softplus(dt + self.dt_bias)
+
+            if inference_params.merge_config is not None and inference_params.merge_config['model_arch'] == "ours" and seqlen > 3000:
+                channel_threshold = inference_params.merge_config['c']
+                # whether_bound = ("bound" in inference_params.merge_config['our_method']) or ("norm" in inference_params.merge_config['our_method'])
+                tA_prod_path = f"/data/kxia2/mamba/artifacts/{inference_params.merge_config['align_path']}/tA_prod/tA_prod_layer_{self.layer_idx}.pt"
+                alpha_path = f"/data/kxia2/mamba/artifacts/{inference_params.merge_config['align_path']}/alpha/alpha_layer_{self.layer_idx}.pt"
+                decay_path = f"/data/kxia2/mamba/artifacts/{inference_params.merge_config['align_path']}/decay/decay_layer_{self.layer_idx}.pt"
+                dt_thre_path = f"/data/kxia2/mamba/artifacts/{inference_params.merge_config['align_path']}/delta_t-thre/delta_t-thre_layer_{self.layer_idx}.pt"
+
+                tA_prod = torch.load(tA_prod_path, map_location=dt.device)
+                self.channel_mask = tA_prod > channel_threshold
+                whether_mask = self.channel_mask.sum() != 0
+
+                available_values = []
+                if inference_params.merge_config['our_method'] in ["alpha", "offline"]:
+                    alpha_all = torch.load(alpha_path, map_location=dt.device)
+                    for k in alpha_all:
+                        available_values.append(int(k[:-1])*1e3)
+                elif inference_params.merge_config['our_method'] in ["bound", "norm"]:  
+                    decay = torch.load(decay_path, map_location=dt.device)
+                elif inference_params.merge_config['our_method'] in ["dt_thre"]:
+                    dt_thre_all = torch.load(dt_thre_path, map_location=dt.device)
+                    for k in dt_thre_all:
+                        available_values.append(int(k[:-1])*1e3)
+                    
+                self.slow_factor = 0
+                self.topk = 2000
+                dt = rearrange(dt, "b l h -> b h l")
+                if inference_params.merge_config['our_method'] == "channelwise_topk" and whether_mask: 
+                    topk_mask = get_topk_mask_channelwise(delta_t=dt[:, self.channel_mask], k=self.topk)
+                    dt[:, self.channel_mask] = torch.where(topk_mask, dt[:, self.channel_mask], dt[:, self.channel_mask] * self.slow_factor)
+                elif inference_params.merge_config['our_method'] == "all_topk" and whether_mask:
+                    topk_indice = get_top_k_token_indices(dt[:, self.channel_mask], k=self.topk)
+                    topk_mask = torch.zeros_like(dt[:, self.channel_mask], dtype=torch.bool)
+                    topk_mask[:,:,topk_indice] = True
+                    dt[:, self.channel_mask] = torch.where(topk_mask, dt[:, self.channel_mask], dt[:, self.channel_mask] * self.slow_factor)
+
+                elif whether_mask and inference_params.merge_config['b'] != 0: 
+                    # available_values = [1e3, 2e3, 3e3, 4e3, 5e3, 6e3, 7e3, 8e3, 10e3, 12e3, 14e3, 16e3, 20e3, 24e3, 30e3, 36e3, 44e3, 54e3, 64e3, 80e3, 96e3, 120e3, 144e3]
+                    key_num = int(min(available_values, key=lambda x: abs(seqlen - x))/1e3) if available_values != [] else None
+                    if "alpha" in inference_params.merge_config['our_method']:
+                        channel_alpha = alpha_all[f"{key_num}k"].to(dt.device)
+                        topk_mask = get_channelwise_topAlpha(delta_t=dt[:, self.channel_mask], alpha=channel_alpha[self.channel_mask]*inference_params.merge_config['b'])
+                        dt[:, self.channel_mask] = torch.where(topk_mask, dt[:, self.channel_mask], dt[:, self.channel_mask] * self.slow_factor)
+                    elif "offline" in inference_params.merge_config['our_method']:
+                        key_num_offline = int(min(available_values, key=lambda x: abs(seqlen - x))/1e3)
+                        channel_alpha = alpha_all[f"{key_num_offline}k"].to(dt.device)
+                        topk_mask, dt_thre = get_channelwise_offline(delta_t=dt[:, self.channel_mask], alpha=channel_alpha[self.channel_mask]*inference_params.merge_config['b'])
+                        # self.dt_thre[f"layer_{self.layer_idx}"] = dt_thre
+                        dt[:, self.channel_mask] = torch.where(topk_mask, dt[:, self.channel_mask], dt[:, self.channel_mask] * self.slow_factor)
+                    elif "bound" in inference_params.merge_config['our_method']:
+                        topk_mask = get_channelwise_topBound(delta_t=dt[:, self.channel_mask], decay=decay[self.channel_mask]*inference_params.merge_config['b'])
+                        dt[:, self.channel_mask] = torch.where(topk_mask, dt[:, self.channel_mask], dt[:, self.channel_mask] * self.slow_factor)
+                    elif "norm" in inference_params.merge_config['our_method']:
+                        dt_norm = get_channelwise_normalize(delta_t=dt[:, self.channel_mask], decay=decay[self.channel_mask]*inference_params.merge_config['b'])
+                        dt[:, self.channel_mask] = dt_norm
+                    elif "dt_thre" in inference_params.merge_config['our_method']:
+                        channel_dt_thre_all = dt_thre_all[f"{key_num}k"].to(dt.device)
+                        # self.dt_thre[f"layer_{self.layer_idx}"] = channel_dt_thre_all
+                        topk_mask = get_channelwise_dt_threshold(delta_t=dt[:, self.channel_mask], dt_thre=channel_dt_thre_all[self.channel_mask]*inference_params.merge_config['b'])
+                        dt[:, self.channel_mask] = torch.where(topk_mask, dt[:, self.channel_mask], dt[:, self.channel_mask] * self.slow_factor)
+
+                else:
+                    if whether_mask:
+                        print("Warning: no method is applied")
+                    dt[:, self.channel_mask] = dt[:, self.channel_mask] * 0
+                dt = rearrange(dt, "b h l -> b l h")
+
+            if inference_params.merge_config['save_para4debug']:
+                params_for_debug['A'] = A.clone().cpu()
+                params_for_debug['Sb_x'] = B.clone().cpu()  # B before discretization
+                params_for_debug['C'] = C.clone().cpu()
+                params_for_debug['delta_t'] = F.softplus(dt.clone() + self.dt_bias.clone()).cpu()
+                params_for_debug['B_t'] = None
+
             y = mamba_chunk_scan_combined(
                 rearrange(x, "b l (h p) -> b l h p", p=self.headdim),
                 dt,
@@ -250,8 +330,8 @@ class Mamba2Layer(nn.Module):
                 chunk_size=self.chunk_size,
                 D=rearrange(self.D, "(h p) -> h p", p=self.headdim) if self.D_has_hdim else self.D,
                 z=rearrange(z, "b l (h p) -> b l h p", p=self.headdim) if not self.rmsnorm else None,
-                dt_bias=self.dt_bias,
-                dt_softplus=True,
+                dt_bias=None,
+                dt_softplus=False,
                 seq_idx=seq_idx,
                 **dt_limit_kwargs,
                 return_final_states=ssm_state is not None,
@@ -272,7 +352,7 @@ class Mamba2Layer(nn.Module):
                 lora_output_out = self.out_proj_lora_B(lora_output_out)
                 out = out + lora_output_out
         
-        return out
+        return out, params_for_debug
 
     def step(self, hidden_states, conv_state, ssm_state):
         dtype = hidden_states.dtype
@@ -392,3 +472,130 @@ class Mamba2Layer(nn.Module):
                 conv_state.zero_()
                 ssm_state.zero_()
         return conv_state, ssm_state
+
+
+'''
+This function assumes that delta_t has been added with delta_bias and has gone through the softplus activation;
+and then it picks the top-k tokens based on the norm of the delta_t of size (1, hidden_state, seq_len).
+'''
+def get_top_k_token_indices(delta_t, k=2000, response_length=0):
+    L = delta_t.shape[2]
+    L_for_dec = L-response_length
+    delta_t_norm = torch.norm(delta_t, p=2, dim=1)
+    delta_t_norm = delta_t_norm[:,:L_for_dec]
+    k = int(min(L_for_dec, k)) # k should be less than the sequence length
+    _, not_decimated = torch.topk(delta_t_norm, k, dim=1, largest=True, sorted=False)
+    not_decimated, _ = torch.sort(not_decimated.squeeze())
+    
+    not_decimated = torch.cat([not_decimated, torch.arange(L_for_dec,L).to(not_decimated.device)])
+    return not_decimated
+
+'''
+This channel selects the topk tokens for each channel (hidden_state dimension) inside delta_t (1, hidden_state, seq_len).
+'''
+def get_topk_mask_channelwise(delta_t, k=2000, response_length=0):
+    L = delta_t.shape[2]
+    L_for_dec = L-response_length
+    k = int(min(L_for_dec, k))
+    delta_t_select = delta_t[:,:,:L_for_dec]
+    # using torch.quantile to get the topk threshold
+    topk_threshold = torch.quantile(delta_t_select, 1 - k/L_for_dec, dim=2, keepdim=True)
+    mask = delta_t_select > topk_threshold
+    mask = torch.cat([mask, torch.ones_like(delta_t[:,:,L_for_dec:], dtype=torch.bool)], dim=2)
+    return mask
+
+
+def get_channelwise_topAlpha(delta_t, alpha=None, response_length=0):
+    L = delta_t.shape[2]
+    L_for_dec = L-response_length
+    if alpha is None:
+        print("Alpha is none, switch to topk method")
+        return get_topk_mask_channelwise(delta_t=delta_t, k=2000, response_length=response_length)
+    k_values = L_for_dec * alpha
+    k_values = torch.clamp(k_values, max=L_for_dec)
+
+    mask = torch.zeros_like(delta_t, dtype=torch.bool)
+
+    _, sorted_indices = torch.sort(delta_t[:, :, :L_for_dec], descending=True, dim=-1)
+    range_tensor = torch.arange(L_for_dec).view(1, 1, -1).expand(delta_t.size(0), delta_t.size(1), L_for_dec).to(k_values.device)
+    topk_mask = range_tensor < k_values.view(delta_t.size(0), delta_t.size(1), 1)
+    mask[:, :, :L_for_dec].scatter_(2, sorted_indices, topk_mask)
+
+    if response_length > 0:
+        mask[:, :, L_for_dec:] = True
+    
+    return mask
+
+
+def get_channelwise_topBound(delta_t, decay=None, response_length=0):
+    L = delta_t.shape[2]
+    L_for_dec = L-response_length
+    if decay is None:
+        print("Decay bound is none, switch to topk method")
+        return get_topk_mask_channelwise(delta_t=delta_t, k=2000, response_length=response_length)
+    
+    sorted_delta_t, sorted_indices = torch.sort(delta_t, descending=True, dim=-1)
+    cumsum_delta = torch.cumsum(sorted_delta_t, dim=-1)
+    cumsum_mask = cumsum_delta <= decay.view(1, -1, 1)
+    topk_positions = cumsum_mask.sum(dim=-1)
+    range_tensor = torch.arange(delta_t.size(-1)).view(1, 1, -1).to(topk_positions.device)
+
+    mask = range_tensor < topk_positions.unsqueeze(-1)
+    final_mask = torch.zeros_like(mask)
+    final_mask.scatter_(2, sorted_indices, mask)
+    
+    if response_length > 0:
+        final_mask[:, :, L_for_dec:] = True
+    
+    return final_mask
+
+
+def get_channelwise_offline(delta_t, alpha=None, response_length=0):
+    L = delta_t.shape[2]
+    L_for_dec = L-response_length
+
+    k_values = L_for_dec * alpha
+    k_values = torch.clamp(k_values, max=L_for_dec).to(torch.int64)
+
+    delta_t_ranked, _ = torch.sort(delta_t, descending=True, dim=-1)
+    dt_thre = torch.gather(delta_t_ranked.squeeze(0), 1, k_values.unsqueeze(-1)).view(-1)
+
+    mask = delta_t >= dt_thre.view(1, -1, 1)
+
+    if response_length > 0:
+        mask[:, :, L_for_dec:] = True
+    
+    return mask, dt_thre
+
+
+def get_channelwise_normalize(delta_t, decay=None, response_length=0):
+    L = delta_t.shape[2]
+    L_for_dec = L-response_length
+    if decay is None:
+        print("Decay bound is none, switch to topk method")
+        return get_topk_mask_channelwise(delta_t=delta_t, k=2000, response_length=response_length)
+
+    delta_t_sum = torch.sum(delta_t, dim=-1, keepdim=False)
+    norm = (decay.unsqueeze(0) / delta_t_sum).unsqueeze(-1)
+    norm = norm.repeat(1, 1, L)
+    # print(norm.shape)
+    if response_length > 0:
+        norm[:, :, L_for_dec:] = 1
+    delta_t = delta_t*norm
+    return delta_t
+
+
+def get_channelwise_dt_threshold(delta_t, dt_thre=None, response_length=0):
+    L = delta_t.shape[2]
+    L_for_dec = L-response_length
+    if dt_thre is None:
+        print("Decay bound is none, switch to topk method")
+        return get_topk_mask_channelwise(delta_t=delta_t, k=2000, response_length=response_length)
+
+    mask = delta_t > dt_thre.unsqueeze(0).unsqueeze(-1)
+
+    if response_length > 0:
+        mask[:, :, L_for_dec:] = True
+
+    return mask
+    

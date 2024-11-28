@@ -16,8 +16,8 @@
 
 import math
 
-from ...configuration_utils import PretrainedConfig
-from ...utils import logging
+from transformers.configuration_utils import PretrainedConfig
+from transformers.utils import logging
 
 import torch.nn.functional as F
 

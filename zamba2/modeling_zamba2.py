@@ -28,25 +28,26 @@ import torch.utils.checkpoint
 from torch import nn
 from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
 
-from ...activations import ACT2FN
-from ...cache_utils import Cache, DynamicCache
-from ...modeling_attn_mask_utils import (
+from transformers.activations import ACT2FN
+from transformers.cache_utils import Cache, DynamicCache
+from transformers.modeling_attn_mask_utils import (
     AttentionMaskConverter,
 )
-from ...modeling_outputs import (
-    BaseModelOutputWithPast,
+from transformers.modeling_outputs import (
     CausalLMOutputWithPast,
     SequenceClassifierOutputWithPast,
 )
-from ...modeling_utils import PreTrainedModel
-from ...utils import (
+from dataclasses import dataclass
+from transformers.modeling_utils import PreTrainedModel
+from transformers.utils import (
     add_start_docstrings,
     add_start_docstrings_to_model_forward,
     is_flash_attn_greater_or_equal_2_10,
     logging,
     replace_return_docstrings,
+    ModelOutput
 )
-from ...utils.import_utils import (
+from transformers.utils.import_utils import (
     is_causal_conv1d_available,
     is_flash_attn_2_available,
     is_mamba_ssm_available,
@@ -80,6 +81,15 @@ is_fast_path_available = all(
 logger = logging.get_logger(__name__)
 
 _CONFIG_FOR_DOC = "Zamba2Config"
+
+@dataclass
+class DebugModelOutputWithPast(ModelOutput):
+
+    last_hidden_state: torch.FloatTensor = None
+    past_key_values: Optional[Tuple[Tuple[torch.FloatTensor]]] = None
+    hidden_states: Optional[Tuple[torch.FloatTensor, ...]] = None
+    attentions: Optional[Tuple[torch.FloatTensor, ...]] = None
+    params_for_debug: Optional[Dict[str, Any]] = None
 
 
 # Copied from transformers.models.llama.modeling_llama._get_unpad_data
@@ -210,7 +220,7 @@ def layer_type_list(config):
 
 
 class HybridMambaAttentionDynamicCache:
-    def __init__(self, config, batch_size, dtype=torch.bfloat16, device=None):
+    def __init__(self, config, batch_size, dtype=torch.bfloat16, device=None, merge_config=None):
         self.dtype = dtype
         self.layers_block_type = config.layers_block_type
         self.device = device
@@ -219,6 +229,7 @@ class HybridMambaAttentionDynamicCache:
         self.sequence_len_offset = 0
         self.batch_size_offset = 0
         self.key_value_memory_dict_mamba = {}
+        self.merge_config = merge_config
 
         self.transformer_layers = []
         for i in range(config.num_hidden_layers):
@@ -987,7 +998,7 @@ class Zamba2MambaDecoderLayer(nn.Module):
             hidden_states + transformer_hidden_states if transformer_hidden_states is not None else hidden_states
         )
         hidden_states = self.input_layernorm(hidden_states)
-        hidden_states = self.mamba(
+        hidden_states, params_for_debug = self.mamba(
             u=hidden_states,
             inference_params=past_key_value,
             attention_mask=attention_mask,
@@ -1006,7 +1017,7 @@ class Zamba2MambaDecoderLayer(nn.Module):
         if use_cache:
             outputs += (past_key_value,)
 
-        return outputs
+        return outputs, params_for_debug
 
 
 ZAMBA2_START_DOCSTRING = r"""
@@ -1183,7 +1194,7 @@ class Zamba2Model(Zamba2PreTrainedModel):
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
-    ) -> Union[Tuple, BaseModelOutputWithPast]:
+    ) -> Union[Tuple, DebugModelOutputWithPast]:
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
@@ -1227,6 +1238,7 @@ class Zamba2Model(Zamba2PreTrainedModel):
         mamba_layers = iter(self.mamba_layers)
         linear_layers = iter(self.linear_layers)
         block_count = 0
+        params_for_debug = init_params_for_debug(False)
         for layer_idx, layer_type in enumerate(self.layers_block_type):
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
@@ -1287,7 +1299,7 @@ class Zamba2Model(Zamba2PreTrainedModel):
                     cache_position,
                 )
             else:
-                layer_outputs = next(mamba_layers)(
+                layer_outputs, cur_params_for_debug = next(mamba_layers)(
                     hidden_states,
                     transformer_hidden_states=transformer_hidden_states,
                     attention_mask=attention_mask,
@@ -1297,6 +1309,7 @@ class Zamba2Model(Zamba2PreTrainedModel):
                     use_cache=use_cache,
                     cache_position=cache_position,
                 )
+                params_for_debug = update_params_for_debug(params_for_debug, cur_params_for_debug)
             hidden_states = layer_outputs[0]
             
         hidden_states = self.final_layernorm(hidden_states)
@@ -1313,11 +1326,12 @@ class Zamba2Model(Zamba2PreTrainedModel):
         if not return_dict:
             return tuple(v for v in [hidden_states, next_cache, all_hidden_states, all_self_attns] if v is not None)
 
-        return BaseModelOutputWithPast(
+        return DebugModelOutputWithPast(
             last_hidden_state=hidden_states,
             past_key_values=next_cache,
             hidden_states=all_hidden_states,
             attentions=all_self_attns,
+            params_for_debug=params_for_debug,
         )
     # Copied from transformers.models.jamba.modeling_jamba.JambaModel._update_causal_mask
     def _update_causal_mask(self, attention_mask, input_tensor, cache_position):
@@ -1403,6 +1417,7 @@ class Zamba2ForCausalLM(Zamba2PreTrainedModel):
         return_dict: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
         num_logits_to_keep: Optional[Union[int, None]] = None,
+        merge_config: Optional[Dict[str, Any]] = None,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         r"""
         Args:
@@ -1442,6 +1457,11 @@ class Zamba2ForCausalLM(Zamba2PreTrainedModel):
         )
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
+        if merge_config is not None and past_key_values is not None:
+            past_key_values.merge_config = merge_config
+        elif merge_config is not None and past_key_values is None:
+            past_key_values=HybridMambaAttentionDynamicCache(merge_config=merge_config) 
+
         # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
         outputs = self.model(
             input_ids=input_ids,
@@ -1455,6 +1475,14 @@ class Zamba2ForCausalLM(Zamba2PreTrainedModel):
             cache_position=cache_position,
             return_dict=return_dict,
         )
+
+        save_para = False
+        for k in outputs.params_for_debug:
+            if outputs.params_for_debug[k] != []:
+                save_para = True
+                break
+        if save_para:
+            self.params_for_debug = outputs.params_for_debug
 
         hidden_states = outputs[0]
         if num_logits_to_keep is None:
@@ -1496,6 +1524,7 @@ class Zamba2ForCausalLM(Zamba2PreTrainedModel):
         cache_position=None,
         position_ids=None,
         use_cache=True,
+        merge_config=None,
         **kwargs,
     ):
         empty_past_kv = past_key_values is None
@@ -1534,6 +1563,7 @@ class Zamba2ForCausalLM(Zamba2PreTrainedModel):
                 "attention_mask": attention_mask,
                 "num_logits_to_keep": self.config.num_logits_to_keep,
                 "cache_position": cache_position,
+                "merge_config": merge_config,
             }
         )
         return model_inputs
@@ -1660,3 +1690,30 @@ class Zamba2ForSequenceClassification(Zamba2PreTrainedModel):
             hidden_states=transformer_outputs.hidden_states,
             attentions=transformer_outputs.attentions,
         )
+
+
+def init_params_for_debug(is_none_init=True):
+    if is_none_init:
+        return None
+    
+    params_for_debug = {}
+    params_for_debug['A'] = []
+    params_for_debug['Sb_x'] = []
+    params_for_debug['C'] = []
+    params_for_debug['delta_t'] = []
+    params_for_debug['B_t'] = []
+    return params_for_debug
+
+
+def update_params_for_debug(params_for_debug, cur_params_for_debug):
+    if params_for_debug is not None and cur_params_for_debug is not None:
+        try:
+            params_for_debug['A'].append(cur_params_for_debug['A'])
+            params_for_debug['Sb_x'].append(cur_params_for_debug['Sb_x'])
+            params_for_debug['C'].append(cur_params_for_debug['C'])
+            params_for_debug['delta_t'].append(cur_params_for_debug['delta_t'])
+            params_for_debug['B_t'].append(cur_params_for_debug['B_t'])
+        except:
+            pass
+
+    return params_for_debug
