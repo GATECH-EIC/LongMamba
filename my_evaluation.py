@@ -168,7 +168,7 @@ def validate_config(config):
             config["decimating_layers"] = [22]
         if "mamba2" in args.model:
             config["decimation_max_p_L_base"] = 4000
-            config["decimation_beta"] = 1
+            config["decimation_beta"] = args.beta
             config["decimating_layers"] = [6, 20, 22, 32]
 
     if config['model_arch'] == 'deci' and config['deci_dataset'] == 'ppl_test':
@@ -1309,6 +1309,7 @@ if __name__ == '__main__':
 
     parser.add_argument("--b", type=float, default=1.)  # alpha factor
     parser.add_argument("--c", type=float, default=1e-30)  # channel_threshold
+    parser.add_argument("--beta", type=float, default=1.0)  # deci beta
 
     parser.add_argument("--debug", action="store_true")  # para analysis
     parser.add_argument("--save_para4debug", "-p4d", action="store_true")  
