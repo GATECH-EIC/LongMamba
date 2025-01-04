@@ -358,6 +358,7 @@ class Zamba2Attention(nn.Module):
                 self.linear_v_lora_A_list.append(linear_v_lora_A)
                 self.linear_v_lora_B_list.append(linear_v_lora_B)
 
+        print("use_mem_rope", config.use_mem_rope)
         if config.use_mem_rope:
             self.rotary_emb = Zamba2RotaryEmbedding(
                 config,
@@ -1460,7 +1461,7 @@ class Zamba2ForCausalLM(Zamba2PreTrainedModel):
         if merge_config is not None and past_key_values is not None:
             past_key_values.merge_config = merge_config
         elif merge_config is not None and past_key_values is None:
-            past_key_values=HybridMambaAttentionDynamicCache(merge_config=merge_config) 
+            past_key_values=HybridMambaAttentionDynamicCache(self.config, input_ids.shape[0], self.dtype, device=self.device, merge_config=merge_config) 
 
         # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
         outputs = self.model(

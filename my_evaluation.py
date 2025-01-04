@@ -85,22 +85,16 @@ def load_model(config):
         else:
             raise(f'bad mamba architecture: {config["model_arch"]}')
         
-        if config['model_arch'] not in ['vanilla', 'ours', 'deci']:
-            raise(f'bad mamba architecture: {config["model_arch"]}')
-            # decimation_config = get_decimation_config(config)
-            # if config['base_model'] is not None:
-            #     print(f'loading model from checkpoint: {config["base_model"]}')
-            #     model = mamba_model_class.from_pretrained(config['base_model'], device=f'cuda:{args.device}', dtype=wanted_dtype, decimation_config=decimation_config)
-            # else:
-            #     print(f'no base_model set, loading model from checkpoint: state-spaces/mamba-1.4b')
-            #     model = mamba_model_class.from_pretrained('state-spaces/mamba-1.4b', device=f'cuda:{args.device}', dtype=wanted_dtype, decimation_config=decimation_config)
+        if config['base_model'] is not None:
+            print(f'loading model from checkpoint: {config["base_model"]}')
+            model = mamba_model_class.from_pretrained(config['base_model'], device=f'cuda:{args.device}', dtype=wanted_dtype)
         else:
-            if config['base_model'] is not None:
-                print(f'loading model from checkpoint: {config["base_model"]}')
-                model = mamba_model_class.from_pretrained(config['base_model'], device=f'cuda:{args.device}', dtype=wanted_dtype)
-            else:
-                print(f'no base_model set, loading model from checkpoint: state-spaces/mamba-1.4b')
-                model = mamba_model_class.from_pretrained('state-spaces/mamba-1.4b', device=f'cuda:{args.device}', dtype=wanted_dtype)
+            print(f'no base_model set, loading model from checkpoint: state-spaces/mamba-1.4b')
+            model = mamba_model_class.from_pretrained('state-spaces/mamba-1.4b', device=f'cuda:{args.device}', dtype=wanted_dtype)
+    elif "Zamba2" in config["base_model"]:
+        from zamba2.modeling_zamba2 import Zamba2ForCausalLM
+        model = Zamba2ForCausalLM.from_pretrained(config['base_model'], torch_dtype=torch.bfloat16).to(device=f'cuda:{args.device}')
+        model_processor = AutoTokenizer.from_pretrained(config['base_model'], clean_up_tokenization_spaces=True)
     elif "opt" in config["base_model"]:
         from transformers import OPTForCausalLM, GPT2Tokenizer
 
@@ -133,7 +127,7 @@ def get_decimation_config(config):
 def validate_config(config):
     config["model_arch"] = args.model_arch
     config["base_model"] = args.model
-    if "mamba" not in config["base_model"]:
+    if "amba" not in config["base_model"]:
         print("Using non-Mamba model, reset 'model_arch' => 'vanilla'")
         config["model_arch"] = "vanilla"
     config["save_para4debug"] = args.save_para4debug
@@ -187,7 +181,7 @@ def my_lm_eval(config, args=None):
     model_processor, model, model_name = load_model(config)
 
     if merge_config['model_arch'] == "ours":
-        model_name += f"_{args.align_path}-{args.b}-{args.c}-{args.our_method}"
+        model_name += f"_{args.align_path}-{args.c}-{args.b}-{args.our_method}"
     elif merge_config['model_arch'] == "deci":
         model_name += f"_deci-{merge_config['decimation_beta']}"
     elif merge_config['model_arch'] == "vanilla":
@@ -248,25 +242,33 @@ def get_pred(rank, world_size, data, max_length, max_gen, prompt_format, dataset
         #     if context_length > 10e3:
         #         continue
         # # else:
-        # #     if context_length < 3e3:
-        # #         continue
-        
-        if "mamba" in model_name:
-            output = model.generate(
-                **input,
-                max_length=context_length+max_gen,
-                # num_beams=1,
-                do_sample=False,
-                temperature=1.0,
-                merge_config=merge_config,
-                # eos_token_id=[tokenizer.eos_token_id, tokenizer.encode("\n", add_special_tokens=False)[-1]],
-                eos_token_id=[tokenizer.eos_token_id],
-                dataset_name=dataset
-            )[0]
-        else:
-            output = model.generate(**input, max_new_tokens=max_gen,
-                                    do_sample=False, temperature=1.0, 
-                                    eos_token_id=[tokenizer.eos_token_id])
+        with torch.no_grad():
+            model.eval()
+            if "mamba" in model_name:
+                output = model.generate(
+                    **input,
+                    max_length=context_length+max_gen,
+                    # num_beams=1,
+                    do_sample=False,
+                    temperature=1.0,
+                    merge_config=merge_config,
+                    # eos_token_id=[tokenizer.eos_token_id, tokenizer.encode("\n", add_special_tokens=False)[-1]],
+                    eos_token_id=[tokenizer.eos_token_id],
+                    dataset_name=dataset
+                )[0]
+            elif "Zamba2" in model_name:
+                output = model.generate(
+                    **input,
+                    max_length=context_length+max_gen,
+                    do_sample=False,
+                    temperature=1.0,
+                    merge_config=merge_config,
+                    eos_token_id=[tokenizer.eos_token_id],
+                )
+            else:
+                output = model.generate(**input, max_new_tokens=max_gen,
+                                        do_sample=False, temperature=1.0, 
+                                        eos_token_id=[tokenizer.eos_token_id])
         pred = tokenizer.decode(output[0][context_length:], skip_special_tokens=True)
 
         with open(out_path, "a", encoding="utf-8") as f:
@@ -314,7 +316,7 @@ def longbench_pred(args, model, tokenizer, model_name, merge_config):
     model2maxlen = json.load(open("/data/kxia2/mamba/configs/model2maxlen.json", "r"))
     device = f'cuda:{args.device}'
 
-    if "mamba" or "pythia" in model_name:
+    if "amba" in model_name or "pythia" in model_name:
         max_length = model2maxlen["mamba-1.4b"]
     elif "opt" in model_name: 
         max_length = model2maxlen["opt-125m"]
@@ -333,7 +335,7 @@ def longbench_pred(args, model, tokenizer, model_name, merge_config):
     dataset2maxlen = json.load(open("/data/kxia2/mamba/configs/dataset2maxlen.json", "r"))
     
     if merge_config['model_arch'] == "ours":
-        model_name += f"_{args.align_path}-{args.b}-{args.c}-{args.our_method}"
+        model_name += f"_{args.align_path}-{args.c}-{args.b}-{args.our_method}"
     elif merge_config['model_arch'] == "deci":
         model_name += f"_deci-{merge_config['decimation_beta']}"
     elif merge_config['model_arch'] == "vanilla":
@@ -375,7 +377,7 @@ def my_longbench(config, args=None, only_eval=False):
 
     scores = dict()
     if merge_config['model_arch'] == "ours":
-        model_name += f"_{args.align_path}-{args.b}-{args.c}-{args.our_method}"
+        model_name += f"_{args.align_path}-{args.c}-{args.b}-{args.our_method}"
     elif merge_config['model_arch'] == "deci":
         model_name += f"_deci-{merge_config['decimation_beta']}"
     elif merge_config['model_arch'] == "vanilla":
@@ -637,7 +639,7 @@ def my_Leval(config, args=None, only_eval=False):
 
     model_processor, model, model_name = load_model(config)
     if merge_config['model_arch'] == "ours":
-        model_name += f"_{args.align_path}-{args.b}-{args.c}-{args.our_method}"
+        model_name += f"_{args.align_path}-{args.c}-{args.b}-{args.our_method}"
     elif merge_config['model_arch'] == "deci":
         model_name += f"_deci-{merge_config['decimation_beta']}"
     elif merge_config['model_arch'] == "vanilla":
@@ -907,7 +909,7 @@ def doc_ret(model, model_processor, model_name, merge_config):
     def get_input_ids_eval_squad(batch, model_processor, config, noise_data_loader, num_noise_docs, i):
         prompt, golden_doc_id = inject_noise_to_context(config, batch["contexts"][0], noise_data_loader, i, num_noise_docs, batch["questions"][0], is_eval=True)
         prompt = prompt + ' <|Answer|> <|Document '
-        input_ids = model_processor(text=prompt, return_tensors="pt").input_ids.to(config['model_device'])
+        input_ids = model_processor(text=prompt, return_tensors="pt").input_ids.to(f'cuda:{args.device}')
         return input_ids, prompt, golden_doc_id
     
     def update_results_eval(pred_dict, samples_df_list, batch, idx, response, prompt, squad_num_noise_docs=None):
@@ -986,6 +988,9 @@ def deci_pg19(model, model_processor, model_name, merge_config):
         print(f'testing perplexity with context length of {window_size}, windows per sample = {max_amount_of_windows}, {trg_len} labels per window')
         for i, sample in enumerate(tqdm(dataset_val)):
             seq_len = sample['input_ids'].size(1)
+            tokenizer_neox = AutoTokenizer.from_pretrained("EleutherAI/gpt-neox-20b", clean_up_tokenization_spaces=True)
+            text = tokenizer_neox.decode(sample['input_ids'][0], skip_special_tokens=True)
+            sample['input_ids'] = model_processor(text=text, return_tensors="pt").input_ids.to(f'cuda:{args.device}')
             if seq_len < window_size:
                 print(f'skipping sample {i}, seq_len = {seq_len//1000}K < window_size = {window_size//1000}K')
             
@@ -994,18 +999,21 @@ def deci_pg19(model, model_processor, model_name, merge_config):
                 stride = minimal_stride
             for begin_loc in range(0, seq_len-window_size, stride):
                 end_loc = begin_loc + window_size
-                input_ids = sample['input_ids'][:, begin_loc:end_loc].to(config['model_device'])
+                input_ids = sample['input_ids'][:, begin_loc:end_loc].to(model.device)
                 target_ids = input_ids.clone()
                 with torch.no_grad():
-                    if "mamba" in model_name:
+                    model.eval()
+                    if "amba" in model_name:
                         target_ids = target_ids[:, -trg_len:]
                         merge_config["resp_len"] = trg_len+1
                         inference_params = InferenceParams(max_seqlen=window_size+1, max_batch_size=input_ids.shape[0], merge_config=merge_config)
-                        outputs, _ = model(input_ids, num_last_tokens=trg_len+1, inference_params=inference_params)
+                        if "Zamba2" in model_name:
+                            outputs = model(input_ids, num_logits_to_keep=100+1, merge_config=merge_config)
+                        else:
+                            outputs, _ = model(input_ids, num_last_tokens=trg_len+1, inference_params=inference_params)
                         logits = outputs.logits
                         neg_log_likelihood = ce_loss(logits.squeeze()[:-1], target_ids.squeeze())
                     else:
-                        model.eval()
                         target_ids[:, :-trg_len] = -100  # -100 no loss sign
                         outputs = model(input_ids, labels=input_ids)
                         neg_log_likelihood = outputs.loss
@@ -1036,7 +1044,7 @@ def my_deci(config, args=None):
 
     model_processor, model, model_name = load_model(config)
     if merge_config['model_arch'] == "ours":
-        model_name += f"_{args.align_path}-{args.b}-{args.c}-{args.our_method}"
+        model_name += f"_{args.align_path}-{args.c}-{args.b}-{args.our_method}"
     elif merge_config['model_arch'] == "deci":
         model_name += f"_deci-{merge_config['decimation_beta']}"
     elif merge_config['model_arch'] == "vanilla":
@@ -1083,15 +1091,8 @@ def special_input_ppl(config, args):
 
     ppls = []
     perplexities = {}
-    max_amount_of_windows = 10
-    # for window_size in range(int(1e3), int(101e3), int(4e3)):
-    # if "2.8b" in model_name:
-    #     length = [1e3, 2e3, 4e3, 8e3, 12e3, 16e3, 20e3, 24e3, 30e3, 36e3, 42e3, 48e3, 56e3, 64e3]
-    # elif "1.4b" in model_name:
-    #     length = [1e3, 2e3, 4e3, 8e3, 12e3, 16e3, 20e3, 24e3, 30e3, 36e3, 42e3, 48e3, 56e3, 64e3, 72e3, 84e3]
-    # else:
-    #     length = [1e3, 2e3, 4e3, 8e3, 12e3, 16e3, 20e3, 24e3, 30e3, 36e3, 42e3, 48e3, 56e3, 64e3, 72e3, 84e3, 96e3, 108e3, 120e3, 140e3, 160e3]
-    length = [8e3, 20e3, 24e3, 30e3, 36e3, 48e3, 64e3, 84e3, 120e3]
+    max_amount_of_windows = 5
+    length = [2e3, 8e3, 16e3, 24e3, 36e3, 48e3, 64e3, 80e3, 96e3]
     for window_size in length:
         window_size = int(window_size)
         nlls = []
@@ -1112,7 +1113,10 @@ def special_input_ppl(config, args):
             with torch.no_grad():
                 inference_params = InferenceParams(max_seqlen=window_size+1, max_batch_size=input_ids.shape[0], merge_config=merge_config)
                 target_ids = target_ids[:, -100:]
-                outputs, _ = model(input_ids, num_last_tokens=100+1, inference_params=inference_params)
+                if "Zamba2" in model_name:
+                    outputs = model(input_ids, num_logits_to_keep=100+1, merge_config=merge_config)
+                else:
+                    outputs, _ = model(input_ids, num_last_tokens=100+1, inference_params=inference_params)
                 logits = outputs.logits
                 ce_loss = torch.nn.CrossEntropyLoss()
                 neg_log_likelihood = ce_loss(logits.squeeze()[:-1], target_ids.squeeze())
@@ -1121,9 +1125,11 @@ def special_input_ppl(config, args):
         print(f'{int(window_size/1e3)}k calculated perplexity: {ppl:.2f}')
         ppls.append(ppl)
         perplexities[f'{int(window_size/1e3)}k'] = f'{ppl:.4f}'
+    avg_ppl = torch.stack(ppls).mean().item()
+    perplexities["average"] = f'{avg_ppl:.4f}'
     os.makedirs(f'pred_ppl/{args.sample_path.split(".txt")[0]}', exist_ok=True)
     if args.model_arch == "ours":
-        with open(f'pred_ppl/{args.sample_path.split(".txt")[0]}/{model_name}_{args.align_path}-{args.our_method}-{args.c}.json', "w") as f:
+        with open(f'pred_ppl/{args.sample_path.split(".txt")[0]}/{model_name}_{args.align_path}-{args.our_method}-{args.c}-{args.b}.json', "w") as f:
             json.dump(perplexities, f, ensure_ascii=False, indent=4)
     elif args.model_arch == "deci":
         with open(f'pred_ppl/{args.sample_path.split(".txt")[0]}/{model_name}_{args.model_arch}-{merge_config["decimation_beta"]}.json', "w") as f:
@@ -1155,108 +1161,123 @@ def debug(config, args):
     inputs = tokenizer(inputS, return_tensors="pt").to(model.device)
     prompt_length = inputs.input_ids.size()[-1]
 
-    dataset_name = "thepile_new"
+    for sc_, sc in enumerate(["0.16", "0.17", "0.18", "0.19", "0.20"]):
+        dataset_name = f"thepile_new-clampTop{sc}-"
 
-    samples = 5
-    for idx in tqdm(range(samples)):
-        os.makedirs(f'/data/kxia2/mamba/artifacts/{model_name}-{dataset_name}{idx:02d}/decay', exist_ok=True)
-        os.makedirs(f'/data/kxia2/mamba/artifacts/{model_name}-{dataset_name}{idx:02d}/delta_t-thre', exist_ok=True)
-        os.makedirs(f'/data/kxia2/mamba/artifacts/{model_name}-{dataset_name}{idx:02d}/alpha', exist_ok=True)
-        os.makedirs(f'/data/kxia2/mamba/artifacts/{model_name}-{dataset_name}{idx:02d}/tA_prod', exist_ok=True)
-        sub_input = inputs.input_ids[:, int(prompt_length/samples*idx+10):int(prompt_length/samples*idx+2010)]
-        _, record = model.generate(sub_input, 
+        samples = 5
+        for idx in tqdm(range(samples)):
+            os.makedirs(f'/data/kxia2/mamba/artifacts/{model_name}-{dataset_name}{idx:02d}/decay', exist_ok=True)
+            os.makedirs(f'/data/kxia2/mamba/artifacts/{model_name}-{dataset_name}{idx:02d}/delta_t-thre', exist_ok=True)
+            os.makedirs(f'/data/kxia2/mamba/artifacts/{model_name}-{dataset_name}{idx:02d}/alpha', exist_ok=True)
+            os.makedirs(f'/data/kxia2/mamba/artifacts/{model_name}-{dataset_name}{idx:02d}/tA_prod', exist_ok=True)
+            sub_input = inputs.input_ids[:, int(prompt_length/samples*idx+10):int(prompt_length/samples*idx+10+2000)]
+            if "Zamba2" in model_name:
+                _ = model.generate(sub_input, 
                                 do_sample=False, 
                                 max_length=2000 + 1, 
                                 eos_token_id=[tokenizer.eos_token_id],
                                 merge_config=merge_config,
                                 use_cache=True)
-        for key in record:
-            if key != "B_t": record[key] = torch.stack([attr for attr in record[key][0]])
-        # torch.save(record, f"/research/data/zhifan/kxia/artifacts/params_for_debug_{model_name}_{dataset_name}{idx:02d}.pt")
-        selected_len = [1e3, 2e3, 3e3, 4e3, 5e3, 6e3, 7e3, 8e3, 10e3, 12e3, 14e3, 16e3, 20e3, 24e3, 30e3, 36e3, 44e3, 54e3, 64e3, 80e3, 96e3, 120e3, 144e3, 168e3,192e3]
-        record['delta_t'] = rearrange(record['delta_t'], "layer b l h -> layer b h l")
-        C = record['delta_t'][0][0].shape[0]
-        layer_cnt = record['delta_t'].shape[0]
-        for layer in tqdm(range(layer_cnt)):
-            # tA = torch.exp(torch.einsum('hs,hd->hsd', record['delta_t'][layer][0], record['A'][layer])).mean(dim=-1)
-            tA = rearrange(record['delta_t'][layer], "b h l -> b l h")*record['A'][layer]
-            tA = rearrange(tA, "b (c l) h -> b h c l", c=1)
-            A_cumsum = torch.cumsum(tA, dim=-1)
-            tA_prod = torch.exp(segsum(F.pad(A_cumsum[:, :, :, -1], (1, 0)), device=A_cumsum.device)[:,:,1,0]).view(-1)
-            torch.save(tA_prod, f"/data/kxia2/mamba/artifacts/{model_name}-{dataset_name}{idx:02d}/tA_prod/tA_prod_layer_{layer}.pt")
-            dt_sum_channels = []
-            for i in range(C):
-                dt_sum = torch.sum(record['delta_t'][layer][0][i])
-                dt_sum_channels.append(dt_sum)
-            # dt_sum_all.append(dt_sum_channels)
-            torch.save(torch.stack(dt_sum_channels), f"/data/kxia2/mamba/artifacts/{model_name}-{dataset_name}{idx:02d}/decay/decay_layer_{layer}.pt")
-
-            alpha_all = {}
-            delta_thre_all = {}
-            for length in selected_len:
-                if length in [1e3, 2e3]:
-                    alpha_all[f"{int(length/1e3)}k"] = torch.ones(C, device=model.device)
-                    delta_thre_all[f"{int(length/1e3)}k"] = torch.zeros(C, device=model.device)
-                else:
-                    standard_dt_sum = torch.stack(dt_sum_channels).to(model.device)
-                    mod_dt = torch.sort(record['delta_t'][layer][0], descending=True, dim=1)[0].to(model.device)
-                    mod_dt = torch.nn.functional.interpolate(mod_dt.unsqueeze(1), size=int(length), mode='linear', align_corners=False).squeeze(1)
-                    mod_dt_cum = torch.cumsum(mod_dt, dim=1)  # Shape [C, length]
-
-                    top_k = torch.argmax((mod_dt_cum > standard_dt_sum.unsqueeze(1)).to(torch.int), dim=1) + 1  # Shape [C]
-                    alpha = top_k / length
-                    alpha = torch.where(alpha <= 1, alpha, torch.tensor(1.0, device=model.device))  # Ensure alpha <= 1
-
-                    delta_thre = torch.gather(mod_dt, 1, top_k.unsqueeze(1)).squeeze(1)
-
-                    alpha_all[f"{int(length/1e3)}k"] = alpha
-                    delta_thre_all[f"{int(length/1e3)}k"] = delta_thre
-                    # print(alpha.shape, delta_thre.shape, mod_dt[0][top_k[0].to(torch.int)] == delta_thre[0])
-            torch.save(alpha_all, f"/data/kxia2/mamba/artifacts/{model_name}-{dataset_name}{idx:02d}/alpha/alpha_layer_{layer}.pt")
-            torch.save(delta_thre_all, f"/data/kxia2/mamba/artifacts/{model_name}-{dataset_name}{idx:02d}/delta_t-thre/delta_t-thre_layer_{layer}.pt")
-    
-    # compute avg align target
-    root_path = "/data/kxia2/mamba/artifacts"
-    ref_list = [f"{model_name}-{dataset_name}{d:02d}" for d in range(samples)]
-    all_cnt = len(ref_list)
-    print(all_cnt)
-
-    for layer in range(layer_cnt):
-        avg_alpha = {}
-        avg_decay = None
-        avg_tA_prod = None
-        avg_delta_thre = {}
-        
-        for dir in ref_list:
-            alpha_path = os.path.join(root_path, dir, "alpha", f"alpha_layer_{layer}.pt")
-            decay_path = os.path.join(root_path, dir, "decay", f"decay_layer_{layer}.pt")
-            tA_prod_path = os.path.join(root_path, dir, "tA_prod", f"tA_prod_layer_{layer}.pt")
-            delta_thre_path = os.path.join(root_path, dir, "delta_t-thre", f"delta_t-thre_layer_{layer}.pt")
-            alpha = torch.load(alpha_path, map_location=model.device)
-            decay = torch.load(decay_path, map_location=model.device)
-            tA_prod = torch.load(tA_prod_path, map_location=model.device)
-            delta_thre = torch.load(delta_thre_path, map_location=model.device)
-
-            if avg_decay is None:
-                avg_alpha = {key: value.clone()/all_cnt for key, value in alpha.items()}
-                avg_decay = decay.clone()/all_cnt
-                avg_delta_thre = {key: value.clone()/all_cnt for key, value in delta_thre.items()}
-                avg_tA_prod = tA_prod.clone()/all_cnt
+                record = model.params_for_debug
+                for key in record:
+                    if key != "B_t": record[key] = torch.stack([attr for attr in record[key]])
             else:
-                for key in alpha:
-                    avg_alpha[key] += alpha[key]/ all_cnt
-                    avg_delta_thre[key] += delta_thre[key]/ all_cnt
-                avg_decay += decay/ all_cnt
-                avg_tA_prod += tA_prod/ all_cnt
-        name = f"{model_name}-{dataset_name}avg"
-        os.makedirs(os.path.join(root_path, name, "alpha"), exist_ok=True)
-        os.makedirs(os.path.join(root_path, name, "decay"), exist_ok=True)
-        os.makedirs(os.path.join(root_path, name, "tA_prod"), exist_ok=True)
-        os.makedirs(os.path.join(root_path, name, "delta_t-thre"), exist_ok=True)
-        torch.save(avg_alpha, os.path.join(root_path, name, "alpha", f"alpha_layer_{layer}.pt"))
-        torch.save(avg_decay, os.path.join(root_path, name, "decay", f"decay_layer_{layer}.pt"))
-        torch.save(avg_tA_prod, os.path.join(root_path, name, "tA_prod", f"tA_prod_layer_{layer}.pt"))
-        torch.save(avg_delta_thre, os.path.join(root_path, name, "delta_t-thre", f"delta_t-thre_layer_{layer}.pt"))
+                _, record = model.generate(sub_input, 
+                                        do_sample=False, 
+                                        max_length=2000 + 1, 
+                                        eos_token_id=[tokenizer.eos_token_id],
+                                        merge_config=merge_config,
+                                        use_cache=True)
+                for key in record:
+                    if key != "B_t": record[key] = torch.stack([attr for attr in record[key][0]])
+            # torch.save(record, f"/research/data/zhifan/kxia/artifacts/params_for_debug_{model_name}_{dataset_name}{idx:02d}.pt")
+            selected_len = [1e3, 2e3, 3e3, 4e3, 5e3, 6e3, 7e3, 8e3, 10e3, 12e3, 14e3, 16e3, 20e3, 24e3, 30e3, 36e3, 44e3, 54e3, 64e3, 80e3, 96e3, 120e3, 144e3, 168e3,192e3]
+            record['delta_t'] = rearrange(record['delta_t'], "layer b l h -> layer b h l")
+            C = record['delta_t'][0][0].shape[0]
+            layer_cnt = record['delta_t'].shape[0]
+            for layer in tqdm(range(layer_cnt)):
+                values, _ = torch.topk(record['delta_t'][layer], k=max(1, int(record['delta_t'][layer].shape[2] * (0.01 * (sc_+16)))), dim=2, largest=True, sorted=False)
+                print(values.shape)
+                record['delta_t'][layer] = torch.clamp(record['delta_t'][layer], max=values.min(dim=2, keepdim=True).values)
+                # tA = torch.exp(torch.einsum('hs,hd->hsd', record['delta_t'][layer][0], record['A'][layer])).mean(dim=-1)
+                tA = rearrange(record['delta_t'][layer], "b h l -> b l h")*record['A'][layer]
+                tA = rearrange(tA, "b (c l) h -> b h c l", c=1)
+                A_cumsum = torch.cumsum(tA, dim=-1)
+                tA_prod = torch.exp(segsum(F.pad(A_cumsum[:, :, :, -1], (1, 0)), device=A_cumsum.device)[:,:,1,0]).view(-1)
+                torch.save(tA_prod, f"/data/kxia2/mamba/artifacts/{model_name}-{dataset_name}{idx:02d}/tA_prod/tA_prod_layer_{layer}.pt")
+                dt_sum_channels = []
+                for i in range(C):
+                    dt_sum = torch.sum(record['delta_t'][layer][0][i])
+                    dt_sum_channels.append(dt_sum)
+                # dt_sum_all.append(dt_sum_channels)
+                torch.save(torch.stack(dt_sum_channels), f"/data/kxia2/mamba/artifacts/{model_name}-{dataset_name}{idx:02d}/decay/decay_layer_{layer}.pt")
+
+                alpha_all = {}
+                delta_thre_all = {}
+                for length in selected_len:
+                    if length in [1e3, 2e3]:
+                        alpha_all[f"{int(length/1e3)}k"] = torch.ones(C, device=model.device)
+                        delta_thre_all[f"{int(length/1e3)}k"] = torch.zeros(C, device=model.device)
+                    else:
+                        standard_dt_sum = torch.stack(dt_sum_channels).to(model.device)
+                        mod_dt = torch.sort(record['delta_t'][layer][0], descending=True, dim=1)[0].to(model.device)
+                        mod_dt = torch.nn.functional.interpolate(mod_dt.unsqueeze(1), size=int(length), mode='linear', align_corners=False).squeeze(1)
+                        mod_dt_cum = torch.cumsum(mod_dt, dim=1)  # Shape [C, length]
+
+                        top_k = torch.argmax((mod_dt_cum > standard_dt_sum.unsqueeze(1)).to(torch.int), dim=1) + 1  # Shape [C]
+                        alpha = top_k / length
+                        alpha = torch.where(alpha <= 1, alpha, torch.tensor(1.0, device=model.device))  # Ensure alpha <= 1
+
+                        delta_thre = torch.gather(mod_dt, 1, top_k.unsqueeze(1)).squeeze(1)
+
+                        alpha_all[f"{int(length/1e3)}k"] = alpha
+                        delta_thre_all[f"{int(length/1e3)}k"] = delta_thre
+                        # print(alpha.shape, delta_thre.shape, mod_dt[0][top_k[0].to(torch.int)] == delta_thre[0])
+                torch.save(alpha_all, f"/data/kxia2/mamba/artifacts/{model_name}-{dataset_name}{idx:02d}/alpha/alpha_layer_{layer}.pt")
+                torch.save(delta_thre_all, f"/data/kxia2/mamba/artifacts/{model_name}-{dataset_name}{idx:02d}/delta_t-thre/delta_t-thre_layer_{layer}.pt")
+        
+        # compute avg align target
+        root_path = "/data/kxia2/mamba/artifacts"
+        ref_list = [f"{model_name}-{dataset_name}{d:02d}" for d in range(samples)]
+        all_cnt = len(ref_list)
+        print(all_cnt)
+
+        for layer in range(layer_cnt):
+            avg_alpha = {}
+            avg_decay = None
+            avg_tA_prod = None
+            avg_delta_thre = {}
+            
+            for dir in ref_list:
+                alpha_path = os.path.join(root_path, dir, "alpha", f"alpha_layer_{layer}.pt")
+                decay_path = os.path.join(root_path, dir, "decay", f"decay_layer_{layer}.pt")
+                tA_prod_path = os.path.join(root_path, dir, "tA_prod", f"tA_prod_layer_{layer}.pt")
+                delta_thre_path = os.path.join(root_path, dir, "delta_t-thre", f"delta_t-thre_layer_{layer}.pt")
+                alpha = torch.load(alpha_path, map_location=model.device)
+                decay = torch.load(decay_path, map_location=model.device)
+                tA_prod = torch.load(tA_prod_path, map_location=model.device)
+                delta_thre = torch.load(delta_thre_path, map_location=model.device)
+
+                if avg_decay is None:
+                    avg_alpha = {key: value.clone()/all_cnt for key, value in alpha.items()}
+                    avg_decay = decay.clone()/all_cnt
+                    avg_delta_thre = {key: value.clone()/all_cnt for key, value in delta_thre.items()}
+                    avg_tA_prod = tA_prod.clone()/all_cnt
+                else:
+                    for key in alpha:
+                        avg_alpha[key] += alpha[key]/ all_cnt
+                        avg_delta_thre[key] += delta_thre[key]/ all_cnt
+                    avg_decay += decay/ all_cnt
+                    avg_tA_prod += tA_prod/ all_cnt
+            name = f"{model_name}-{dataset_name}avg"
+            os.makedirs(os.path.join(root_path, name, "alpha"), exist_ok=True)
+            os.makedirs(os.path.join(root_path, name, "decay"), exist_ok=True)
+            os.makedirs(os.path.join(root_path, name, "tA_prod"), exist_ok=True)
+            os.makedirs(os.path.join(root_path, name, "delta_t-thre"), exist_ok=True)
+            torch.save(avg_alpha, os.path.join(root_path, name, "alpha", f"alpha_layer_{layer}.pt"))
+            torch.save(avg_decay, os.path.join(root_path, name, "decay", f"decay_layer_{layer}.pt"))
+            torch.save(avg_tA_prod, os.path.join(root_path, name, "tA_prod", f"tA_prod_layer_{layer}.pt"))
+            torch.save(avg_delta_thre, os.path.join(root_path, name, "delta_t-thre", f"delta_t-thre_layer_{layer}.pt"))
     exit()
     
 
@@ -1287,7 +1308,7 @@ if __name__ == '__main__':
 
     # decay manipulation
     parser.add_argument("--align_path", type=str, default="thepileavg")  # /data/kxia2/mamba/artifacts/ + model_name + align_path
-    parser.add_argument("--our_method", type=str, default="alpha")  # alpha bound offline
+    parser.add_argument("--our_method", type=str, default="alpha")  # alpha bound offline dt_thre norm
     
     # for special_input_ppl()
     parser.add_argument("--perplexity", "-ppl", action="store_true")

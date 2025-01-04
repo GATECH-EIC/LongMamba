@@ -247,13 +247,17 @@ class Mamba2Layer(nn.Module):
             params_for_debug = {}
             dt = F.softplus(dt + self.dt_bias)
 
-            if inference_params.merge_config is not None and inference_params.merge_config['model_arch'] == "ours" and seqlen > 3000:
+            if inference_params.merge_config is not None and inference_params.merge_config['model_arch'] == "ours" and seqlen > 5000:
+                layers_block_type = ['m', 'm', 'm', 'm', 'm', 'm', 'g', 'm', 'm', 'm', 'm', 'm', 'g', 'm', 'm', 'm', 'm', 'm', 'g', 'm', 'm', 'm', 'm', 'm', 'g', 'm', 'm', 'm', 'm', 'm', 'g', 'm', 'm', 'm', 'm', 'm', 'g', 'm', 'm', 'm', 'm', 'm', 'g', 'm', 'm', 'm', 'm', 'g', 'm', 'm', 'm', 'g', 'm', 'm']
+                layer_past = layers_block_type[:(self.layer_idx+1)]
+                mamba_layer_idx = len([layer for layer in layer_past if layer != 'g']) - 1
+
                 channel_threshold = inference_params.merge_config['c']
                 # whether_bound = ("bound" in inference_params.merge_config['our_method']) or ("norm" in inference_params.merge_config['our_method'])
-                tA_prod_path = f"/data/kxia2/mamba/artifacts/{inference_params.merge_config['align_path']}/tA_prod/tA_prod_layer_{self.layer_idx}.pt"
-                alpha_path = f"/data/kxia2/mamba/artifacts/{inference_params.merge_config['align_path']}/alpha/alpha_layer_{self.layer_idx}.pt"
-                decay_path = f"/data/kxia2/mamba/artifacts/{inference_params.merge_config['align_path']}/decay/decay_layer_{self.layer_idx}.pt"
-                dt_thre_path = f"/data/kxia2/mamba/artifacts/{inference_params.merge_config['align_path']}/delta_t-thre/delta_t-thre_layer_{self.layer_idx}.pt"
+                tA_prod_path = f"/data/kxia2/mamba/artifacts/{inference_params.merge_config['align_path']}/tA_prod/tA_prod_layer_{mamba_layer_idx}.pt"
+                alpha_path = f"/data/kxia2/mamba/artifacts/{inference_params.merge_config['align_path']}/alpha/alpha_layer_{mamba_layer_idx}.pt"
+                decay_path = f"/data/kxia2/mamba/artifacts/{inference_params.merge_config['align_path']}/decay/decay_layer_{mamba_layer_idx}.pt"
+                dt_thre_path = f"/data/kxia2/mamba/artifacts/{inference_params.merge_config['align_path']}/delta_t-thre/delta_t-thre_layer_{mamba_layer_idx}.pt"
 
                 tA_prod = torch.load(tA_prod_path, map_location=dt.device)
                 self.channel_mask = tA_prod > channel_threshold
@@ -294,17 +298,17 @@ class Mamba2Layer(nn.Module):
                         key_num_offline = int(min(available_values, key=lambda x: abs(seqlen - x))/1e3)
                         channel_alpha = alpha_all[f"{key_num_offline}k"].to(dt.device)
                         topk_mask, dt_thre = get_channelwise_offline(delta_t=dt[:, self.channel_mask], alpha=channel_alpha[self.channel_mask]*inference_params.merge_config['b'])
-                        # self.dt_thre[f"layer_{self.layer_idx}"] = dt_thre
+                        # self.dt_thre[f"layer_{mamba_layer_idx}"] = dt_thre
                         dt[:, self.channel_mask] = torch.where(topk_mask, dt[:, self.channel_mask], dt[:, self.channel_mask] * self.slow_factor)
                     elif "bound" in inference_params.merge_config['our_method']:
                         topk_mask = get_channelwise_topBound(delta_t=dt[:, self.channel_mask], decay=decay[self.channel_mask]*inference_params.merge_config['b'])
                         dt[:, self.channel_mask] = torch.where(topk_mask, dt[:, self.channel_mask], dt[:, self.channel_mask] * self.slow_factor)
                     elif "norm" in inference_params.merge_config['our_method']:
                         dt_norm = get_channelwise_normalize(delta_t=dt[:, self.channel_mask], decay=decay[self.channel_mask]*inference_params.merge_config['b'])
-                        dt[:, self.channel_mask] = dt_norm
+                        dt[:, self.channel_mask] = dt_norm.to(dt_norm.dtype)
                     elif "dt_thre" in inference_params.merge_config['our_method']:
                         channel_dt_thre_all = dt_thre_all[f"{key_num}k"].to(dt.device)
-                        # self.dt_thre[f"layer_{self.layer_idx}"] = channel_dt_thre_all
+                        # self.dt_thre[f"layer_{mamba_layer_idx}"] = channel_dt_thre_all
                         topk_mask = get_channelwise_dt_threshold(delta_t=dt[:, self.channel_mask], dt_thre=channel_dt_thre_all[self.channel_mask]*inference_params.merge_config['b'])
                         dt[:, self.channel_mask] = torch.where(topk_mask, dt[:, self.channel_mask], dt[:, self.channel_mask] * self.slow_factor)
 
@@ -318,7 +322,7 @@ class Mamba2Layer(nn.Module):
                 params_for_debug['A'] = A.clone().cpu()
                 params_for_debug['Sb_x'] = B.clone().cpu()  # B before discretization
                 params_for_debug['C'] = C.clone().cpu()
-                params_for_debug['delta_t'] = F.softplus(dt.clone() + self.dt_bias.clone()).cpu()
+                params_for_debug['delta_t'] = dt.clone().cpu()  # F.softplus(dt.clone() + self.dt_bias.clone()).cpu()
                 params_for_debug['B_t'] = None
 
             y = mamba_chunk_scan_combined(

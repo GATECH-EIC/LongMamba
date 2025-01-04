@@ -26,4 +26,5 @@ tensors = model.generate(
 )
 
 print(tensors)
-print(model.params_for_debug)
+print(torch.stack(model.params_for_debug['delta_t']).shape)
+print(torch.stack(model.params_for_debug['A']).shape)
