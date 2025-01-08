@@ -1091,7 +1091,7 @@ def special_input_ppl(config, args):
 
     ppls = []
     perplexities = {}
-    max_amount_of_windows = 5
+    max_amount_of_windows = 20
     length = [2e3, 8e3, 16e3, 24e3, 36e3, 48e3, 64e3, 80e3, 96e3]
     for window_size in length:
         window_size = int(window_size)
@@ -1161,7 +1161,7 @@ def debug(config, args):
     inputs = tokenizer(inputS, return_tensors="pt").to(model.device)
     prompt_length = inputs.input_ids.size()[-1]
 
-    for sc_, sc in enumerate(["0.16", "0.17", "0.18", "0.19", "0.20"]):
+    for sc_, sc in enumerate(["0.15", "0.16", "0.17", "0.18", "0.19", "0.20"]):
         dataset_name = f"thepile_new-clampTop{sc}-"
 
         samples = 5
@@ -1196,7 +1196,7 @@ def debug(config, args):
             C = record['delta_t'][0][0].shape[0]
             layer_cnt = record['delta_t'].shape[0]
             for layer in tqdm(range(layer_cnt)):
-                values, _ = torch.topk(record['delta_t'][layer], k=max(1, int(record['delta_t'][layer].shape[2] * (0.01 * (sc_+16)))), dim=2, largest=True, sorted=False)
+                values, _ = torch.topk(record['delta_t'][layer], k=max(1, int(record['delta_t'][layer].shape[2] * (0.01 * (sc_+15)))), dim=2, largest=True, sorted=False)
                 print(values.shape)
                 record['delta_t'][layer] = torch.clamp(record['delta_t'][layer], max=values.min(dim=2, keepdim=True).values)
                 # tA = torch.exp(torch.einsum('hs,hd->hsd', record['delta_t'][layer][0], record['A'][layer])).mean(dim=-1)
