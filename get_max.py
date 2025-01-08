@@ -7,11 +7,11 @@ import os
 
 
 
-root_path = "/data/kxia2/mamba-zamba/artifacts"
+root_path = "/data/kxia2/mamba/artifacts"
 
 
 
-for factor in ["0.16", "0.17", "0.18", "0.19", "0.20"]:
+for factor in ["0.15", "0.16", "0.17", "0.18", "0.19", "0.20"]:
     ref_list = [d for d in os.listdir(root_path) if f"1.3b-thepile_new-clampTop{factor}-0" in d]  # lambada0
     all_cnt = len(ref_list)
     print(all_cnt)
