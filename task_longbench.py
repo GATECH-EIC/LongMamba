@@ -153,8 +153,8 @@ def longbench_pred(args, model, tokenizer, model_name, merge_config):
     mp.set_start_method('spawn', force=True)
     world_size = torch.cuda.device_count()
 
-    model2path = json.load(open("/data/kxia2/mamba/configs/model2path.json", "r"))
-    model2maxlen = json.load(open("/data/kxia2/mamba/configs/model2maxlen.json", "r"))
+    model2path = json.load(open("./configs/model2path.json", "r"))
+    model2maxlen = json.load(open("./configs/model2maxlen.json", "r"))
     device = f'cuda:{args.device}'
 
     if "amba" in model_name or "pythia" in model_name:
@@ -172,8 +172,8 @@ def longbench_pred(args, model, tokenizer, model_name, merge_config):
                     "dureader", "gov_report", "qmsum", "multi_news", "vcsum", "trec", "triviaqa", "samsum", "lsht", \
                     "passage_count", "passage_retrieval_en", "passage_retrieval_zh", "lcc", "repobench-p"]
     # we design specific prompt format and max generation length for each task, feel free to modify them to optimize model output
-    dataset2prompt = json.load(open("/data/kxia2/mamba/configs/dataset2prompt.json", "r"))
-    dataset2maxlen = json.load(open("/data/kxia2/mamba/configs/dataset2maxlen.json", "r"))
+    dataset2prompt = json.load(open("./configs/dataset2prompt.json", "r"))
+    dataset2maxlen = json.load(open("./configs/dataset2maxlen.json", "r"))
     
     if merge_config['model_arch'] == "ours":
         model_name += f"_{args.align_path}-{args.c}-{args.b}-{args.our_method}"

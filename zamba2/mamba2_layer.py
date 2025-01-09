@@ -254,10 +254,10 @@ class Mamba2Layer(nn.Module):
 
                 channel_threshold = inference_params.merge_config['c']
                 # whether_bound = ("bound" in inference_params.merge_config['our_method']) or ("norm" in inference_params.merge_config['our_method'])
-                tA_prod_path = f"/data/kxia2/mamba/artifacts/{inference_params.merge_config['align_path']}/tA_prod/tA_prod_layer_{mamba_layer_idx}.pt"
-                alpha_path = f"/data/kxia2/mamba/artifacts/{inference_params.merge_config['align_path']}/alpha/alpha_layer_{mamba_layer_idx}.pt"
-                decay_path = f"/data/kxia2/mamba/artifacts/{inference_params.merge_config['align_path']}/decay/decay_layer_{mamba_layer_idx}.pt"
-                dt_thre_path = f"/data/kxia2/mamba/artifacts/{inference_params.merge_config['align_path']}/delta_t-thre/delta_t-thre_layer_{mamba_layer_idx}.pt"
+                tA_prod_path = f"./artifacts/{inference_params.merge_config['align_path']}/tA_prod/tA_prod_layer_{mamba_layer_idx}.pt"
+                alpha_path = f"./artifacts/{inference_params.merge_config['align_path']}/alpha/alpha_layer_{mamba_layer_idx}.pt"
+                decay_path = f"./artifacts/{inference_params.merge_config['align_path']}/decay/decay_layer_{mamba_layer_idx}.pt"
+                dt_thre_path = f"./artifacts/{inference_params.merge_config['align_path']}/delta_t-thre/delta_t-thre_layer_{mamba_layer_idx}.pt"
 
                 tA_prod = torch.load(tA_prod_path, map_location=dt.device)
                 self.channel_mask = tA_prod > channel_threshold

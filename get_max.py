@@ -7,7 +7,7 @@ import os
 
 
 
-root_path = "/data/kxia2/mamba/artifacts"
+root_path = "./artifacts"
 
 
 

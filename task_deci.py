@@ -194,10 +194,10 @@ def deci_niah_debug(model, model_processor, model_name, merge_config, random_see
                                     do_sample=False, use_cache=True,
                                     eos_token_id=[model_processor.eos_token_id])
         dataset_name = "niah"    
-        os.makedirs(f'/data/kxia2/mamba/artifacts/{model_name}-{dataset_name}{idx:02d}/decay', exist_ok=True)
-        os.makedirs(f'/data/kxia2/mamba/artifacts/{model_name}-{dataset_name}{idx:02d}/delta_t-thre', exist_ok=True)
-        os.makedirs(f'/data/kxia2/mamba/artifacts/{model_name}-{dataset_name}{idx:02d}/alpha', exist_ok=True)
-        os.makedirs(f'/data/kxia2/mamba/artifacts/{model_name}-{dataset_name}{idx:02d}/tA_prod', exist_ok=True)
+        os.makedirs(f'./artifacts/{model_name}-{dataset_name}{idx:02d}/decay', exist_ok=True)
+        os.makedirs(f'./artifacts/{model_name}-{dataset_name}{idx:02d}/delta_t-thre', exist_ok=True)
+        os.makedirs(f'./artifacts/{model_name}-{dataset_name}{idx:02d}/alpha', exist_ok=True)
+        os.makedirs(f'./artifacts/{model_name}-{dataset_name}{idx:02d}/tA_prod', exist_ok=True)
         
         for key in record:
             if key != "B_t": record[key] = torch.stack([attr for attr in record[key][0]])
@@ -208,13 +208,13 @@ def deci_niah_debug(model, model_processor, model_name, merge_config, random_see
         for layer in tqdm(range(layer_cnt)):
             tA = torch.exp(torch.einsum('hs,hd->hsd', record['delta_t'][layer][0], record['A'][layer])).mean(dim=-1)
             tA_prod = torch.prod(tA, dim=-1)
-            torch.save(tA_prod, f"/data/kxia2/mamba/artifacts/{model_name}-{dataset_name}{idx:02d}/tA_prod/tA_prod_layer_{layer}.pt")
+            torch.save(tA_prod, f"./artifacts/{model_name}-{dataset_name}{idx:02d}/tA_prod/tA_prod_layer_{layer}.pt")
             dt_sum_channels = []
             for i in range(C):
                 dt_sum = torch.sum(record['delta_t'][layer][0][i])
                 dt_sum_channels.append(dt_sum)
             # dt_sum_all.append(dt_sum_channels)
-            torch.save(torch.stack(dt_sum_channels), f"/data/kxia2/mamba/artifacts/{model_name}-{dataset_name}{idx:02d}/decay/decay_layer_{layer}.pt")
+            torch.save(torch.stack(dt_sum_channels), f"./artifacts/{model_name}-{dataset_name}{idx:02d}/decay/decay_layer_{layer}.pt")
 
             alpha_all = {}
             delta_thre_all = {}
@@ -236,8 +236,8 @@ def deci_niah_debug(model, model_processor, model_name, merge_config, random_see
 
                     alpha_all[f"{int(length/1e3)}k"] = alpha
                     delta_thre_all[f"{int(length/1e3)}k"] = delta_thre
-            torch.save(alpha_all, f"/data/kxia2/mamba/artifacts/{model_name}-{dataset_name}{idx:02d}/alpha/alpha_layer_{layer}.pt")
-            torch.save(delta_thre_all, f"/data/kxia2/mamba/artifacts/{model_name}-{dataset_name}{idx:02d}/delta_t-thre/delta_t-thre_layer_{layer}.pt")
+            torch.save(alpha_all, f"./artifacts/{model_name}-{dataset_name}{idx:02d}/alpha/alpha_layer_{layer}.pt")
+            torch.save(delta_thre_all, f"./artifacts/{model_name}-{dataset_name}{idx:02d}/delta_t-thre/delta_t-thre_layer_{layer}.pt")
     exit()
 
 def doc_ret(model, model_processor, model_name, merge_config):

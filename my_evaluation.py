@@ -271,7 +271,7 @@ if __name__ == '__main__':
     parser.add_argument("--model_arch", type=str, default="ours", choices=["vanilla", "ours", "deci"])
 
     # decay manipulation
-    parser.add_argument("--align_path", type=str, default="thepileavg")  # /data/kxia2/mamba/artifacts/ + model_name + align_path
+    parser.add_argument("--align_path", type=str, default="thepileavg")  # ./artifacts/ + model_name + align_path
     parser.add_argument("--our_method", type=str, default="alpha")  # alpha bound offline dt_thre norm
     
     # for special_input_ppl()

@@ -93,10 +93,10 @@ def debug(config, args):
 
         samples = 5
         for idx in tqdm(range(samples)):
-            os.makedirs(f'/data/kxia2/mamba/artifacts/{model_name}-{dataset_name}{idx:02d}/decay', exist_ok=True)
-            os.makedirs(f'/data/kxia2/mamba/artifacts/{model_name}-{dataset_name}{idx:02d}/delta_t-thre', exist_ok=True)
-            os.makedirs(f'/data/kxia2/mamba/artifacts/{model_name}-{dataset_name}{idx:02d}/alpha', exist_ok=True)
-            os.makedirs(f'/data/kxia2/mamba/artifacts/{model_name}-{dataset_name}{idx:02d}/tA_prod', exist_ok=True)
+            os.makedirs(f'./artifacts/{model_name}-{dataset_name}{idx:02d}/decay', exist_ok=True)
+            os.makedirs(f'./artifacts/{model_name}-{dataset_name}{idx:02d}/delta_t-thre', exist_ok=True)
+            os.makedirs(f'./artifacts/{model_name}-{dataset_name}{idx:02d}/alpha', exist_ok=True)
+            os.makedirs(f'./artifacts/{model_name}-{dataset_name}{idx:02d}/tA_prod', exist_ok=True)
             sub_input = inputs.input_ids[:, int(prompt_length/samples*idx+10):int(prompt_length/samples*idx+10+2000)]
             if "Zamba2" in model_name:
                 _ = model.generate(sub_input, 
@@ -131,13 +131,13 @@ def debug(config, args):
                 tA = rearrange(tA, "b (c l) h -> b h c l", c=1)
                 A_cumsum = torch.cumsum(tA, dim=-1)
                 tA_prod = torch.exp(segsum(F.pad(A_cumsum[:, :, :, -1], (1, 0)), device=A_cumsum.device)[:,:,1,0]).view(-1)
-                torch.save(tA_prod, f"/data/kxia2/mamba/artifacts/{model_name}-{dataset_name}{idx:02d}/tA_prod/tA_prod_layer_{layer}.pt")
+                torch.save(tA_prod, f"./artifacts/{model_name}-{dataset_name}{idx:02d}/tA_prod/tA_prod_layer_{layer}.pt")
                 dt_sum_channels = []
                 for i in range(C):
                     dt_sum = torch.sum(record['delta_t'][layer][0][i])
                     dt_sum_channels.append(dt_sum)
                 # dt_sum_all.append(dt_sum_channels)
-                torch.save(torch.stack(dt_sum_channels), f"/data/kxia2/mamba/artifacts/{model_name}-{dataset_name}{idx:02d}/decay/decay_layer_{layer}.pt")
+                torch.save(torch.stack(dt_sum_channels), f"./artifacts/{model_name}-{dataset_name}{idx:02d}/decay/decay_layer_{layer}.pt")
 
                 alpha_all = {}
                 delta_thre_all = {}
@@ -160,11 +160,11 @@ def debug(config, args):
                         alpha_all[f"{int(length/1e3)}k"] = alpha
                         delta_thre_all[f"{int(length/1e3)}k"] = delta_thre
                         # print(alpha.shape, delta_thre.shape, mod_dt[0][top_k[0].to(torch.int)] == delta_thre[0])
-                torch.save(alpha_all, f"/data/kxia2/mamba/artifacts/{model_name}-{dataset_name}{idx:02d}/alpha/alpha_layer_{layer}.pt")
-                torch.save(delta_thre_all, f"/data/kxia2/mamba/artifacts/{model_name}-{dataset_name}{idx:02d}/delta_t-thre/delta_t-thre_layer_{layer}.pt")
+                torch.save(alpha_all, f"./artifacts/{model_name}-{dataset_name}{idx:02d}/alpha/alpha_layer_{layer}.pt")
+                torch.save(delta_thre_all, f"./artifacts/{model_name}-{dataset_name}{idx:02d}/delta_t-thre/delta_t-thre_layer_{layer}.pt")
         
         # compute avg align target
-        root_path = "/data/kxia2/mamba/artifacts"
+        root_path = "./artifacts"
         ref_list = [f"{model_name}-{dataset_name}{d:02d}" for d in range(samples)]
         all_cnt = len(ref_list)
         print(all_cnt)
