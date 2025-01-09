@@ -9,6 +9,7 @@ build/
 *.egg-info/
 build/
 **.so
+*.txt
 
 tmp*/*
 benchmarks/*
