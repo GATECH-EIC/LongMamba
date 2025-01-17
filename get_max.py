@@ -11,15 +11,15 @@ root_path = "./artifacts"
 
 
 
-for factor in ["0.15", "0.16", "0.17", "0.18", "0.19", "0.20"]:
-    ref_list = [d for d in os.listdir(root_path) if f"1.3b-thepile_new-clampTop{factor}-0" in d]  # lambada0
+for factor in ["0.00", "0.01", "0.02", "0.03", "0.04", "0.05", "0.06", "0.07", "0.08", "0.09", "0.10", "0.11", "0.12", "0.13", "0.14", "0.15", "0.16", "0.17", "0.18", "0.19", "0.20"]:
+    ref_list = [d for d in os.listdir(root_path) if f"1.2B-thepile_new4k-clampTop{factor}-0" in d]  # lambada0
     all_cnt = len(ref_list)
     print(all_cnt)
-    for layer in range(48):
+    for layer in range(38):
         max_alpha = {}
         max_decay = None
         max_tA_prod = None
-        for dir in [d for d in os.listdir(root_path) if f"1.3b-thepile_new-clampTop{factor}-0" in d]:
+        for dir in [d for d in os.listdir(root_path) if f"1.2B-thepile_new4k-clampTop{factor}-0" in d]:
             alpha_path = os.path.join(root_path, dir, "alpha", f"alpha_layer_{layer}.pt")
             decay_path = os.path.join(root_path, dir, "decay", f"decay_layer_{layer}.pt")
             tA_prod_path = os.path.join(root_path, dir, "tA_prod", f"tA_prod_layer_{layer}.pt")

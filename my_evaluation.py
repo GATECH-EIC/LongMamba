@@ -215,7 +215,7 @@ def special_input_ppl(config, args):
     ppls = []
     perplexities = {}
     max_amount_of_windows = 20
-    length = [2e3, 8e3, 16e3, 24e3, 36e3, 48e3, 64e3, 80e3, 96e3]
+    length = [2e3, 8e3, 16e3, 24e3, 32e3, 40e3]
     for window_size in length:
         window_size = int(window_size)
         nlls = []

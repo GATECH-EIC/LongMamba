@@ -345,10 +345,6 @@ def doc_ret(model, model_processor, model_name, merge_config):
         noise_data_loader = DataLoader(shuffled_val_dataset, collate_fn=collate_fn_squad, batch_size=1, shuffle=False, num_workers=0).__iter__() # a bit hacky but we reset the DataLoader in every loop so we would not run out of noise documents
         for idx, batch in enumerate(tqdm(data_loader_val)):
             input_ids, prompt, golden_doc_id = get_input_ids_eval_squad(batch, model_processor, merge_config, noise_data_loader, num_noise_docs, idx)
-            # print(input_ids.shape)
-            # with open(f"doc_ret_sample.txt", "w") as f:
-            #     f.write(prompt)
-            #     exit()
             batch['outputs'][0] = f'{golden_doc_id}|>'
             # output, params_for_debug = model.generate(input_ids, max_length=len(input_ids[0])+10, eos_token_id=model_processor.eos_token_id)
             if "mamba" in model_name:
@@ -400,7 +396,7 @@ def deci_pg19(model, model_processor, model_name, merge_config):
             seq_len = sample['input_ids'].size(1)
             tokenizer_neox = AutoTokenizer.from_pretrained("EleutherAI/gpt-neox-20b", clean_up_tokenization_spaces=True)
             text = tokenizer_neox.decode(sample['input_ids'][0], skip_special_tokens=True)
-            sample['input_ids'] = model_processor(text=text, return_tensors="pt").input_ids.to(f'cuda:{args.device}')
+            sample['input_ids'] = model_processor(text=text, return_tensors="pt").input_ids.to(model.device)
             if seq_len < window_size:
                 print(f'skipping sample {i}, seq_len = {seq_len//1000}K < window_size = {window_size//1000}K')
             
