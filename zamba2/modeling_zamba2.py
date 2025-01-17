@@ -358,8 +358,14 @@ class Zamba2Attention(nn.Module):
                 self.linear_v_lora_A_list.append(linear_v_lora_A)
                 self.linear_v_lora_B_list.append(linear_v_lora_B)
 
-        print("use_mem_rope", config.use_mem_rope)
+        # print("config", config)
         if config.use_mem_rope:
+            self.rope_theta = 10000 / 4096 * 100000
+            config.max_position_embeddings = 100000
+
+            print("rope_theta", self.rope_theta)
+            print("max_position_embeddings", config.max_position_embeddings)
+
             self.rotary_emb = Zamba2RotaryEmbedding(
                 config,
                 self.head_dim,
