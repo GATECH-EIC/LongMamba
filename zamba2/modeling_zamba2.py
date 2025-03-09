@@ -360,8 +360,8 @@ class Zamba2Attention(nn.Module):
 
         # print("config", config)
         if config.use_mem_rope:
-            self.rope_theta = 10000 / 4096 * 100000
-            config.max_position_embeddings = 100000
+            self.rope_theta = 10000 / 4096 * (100000)
+            config.max_position_embeddings = (100000)
 
             print("rope_theta", self.rope_theta)
             print("max_position_embeddings", config.max_position_embeddings)

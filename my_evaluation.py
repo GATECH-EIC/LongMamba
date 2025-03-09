@@ -215,7 +215,8 @@ def special_input_ppl(config, args):
     ppls = []
     perplexities = {}
     max_amount_of_windows = 20
-    length = [2e3, 8e3, 16e3, 24e3, 32e3, 40e3]
+    # length = [2e3, 8e3, 16e3, 22e3, 28e3, 34e3, 38e3] pgrep -f my_evaluation.py | xargs kill -9
+    length = [40e3, 30e3, 20e3, 10e3, 2e3]
     for window_size in length:
         window_size = int(window_size)
         nlls = []
@@ -261,6 +262,90 @@ def special_input_ppl(config, args):
         with open(f'pred_ppl/{args.sample_path.split(".txt")[0]}/{model_name}_{args.model_arch}.json', "w") as f:
             json.dump(perplexities, f, ensure_ascii=False, indent=4)
 
+    
+def test_latency(config, args):
+    import time
+    set_seed(config['seed'])
+    merge_config = validate_config(config, args)  # define chunk size 1 or False
+
+    tokenizer, model, model_name = load_model(config, args)
+
+    if merge_config['model_arch'] == "ours":
+        model_name += f"_{args.align_path}-{args.c}-{args.b}-{args.our_method}"
+    elif merge_config['model_arch'] == "deci":
+        model_name += f"_deci-{merge_config['decimation_beta']}"
+    elif merge_config['model_arch'] == "vanilla":
+        model_name += "_vanilla"
+
+    dataset_name = "thepile"
+    with open(f'subseq_{dataset_name}.txt', 'r', encoding='utf-8') as file:
+        inputS = file.read()
+    inputs = tokenizer(inputS, return_tensors="pt").to(model.device)
+    prompt_length = inputs.input_ids.size()[-1]
+
+    test_list = [1, 2, 4, 8, 16, 24, 32, 40]
+
+    for length in test_list:
+        times = []
+        for rounds in range(10):
+            sub_input = inputs.input_ids[:, int(10000*rounds+10):int(10+length*1000+10000*rounds)]
+            start_time = time.time()
+            if "Zamba2" in model_name:
+                _ = model.generate(sub_input, 
+                                do_sample=False, 
+                                max_length=length*1000 + 1, 
+                                eos_token_id=[tokenizer.eos_token_id],
+                                merge_config=merge_config,
+                                use_cache=True)
+            else:
+                _, record = model.generate(sub_input, 
+                                        do_sample=False, 
+                                        max_length=length*1000 + 1, 
+                                        eos_token_id=[tokenizer.eos_token_id],
+                                        merge_config=merge_config,
+                                        use_cache=True)
+            end_time = time.time()
+            elapsed_time = end_time - start_time
+            times.append(elapsed_time)
+        
+        average_time = np.mean(times)
+        std_dev = np.std(times)
+        print(f"{model_name}, {length}k: Average {average_time:.4f} ± {std_dev:.4f} seconds")
+    
+    merge_config['model_arch'] = "vanilla"
+    if merge_config['model_arch'] == "ours":
+        model_name += f"_{args.align_path}-{args.c}-{args.b}-{args.our_method}"
+    elif merge_config['model_arch'] == "deci":
+        model_name += f"_deci-{merge_config['decimation_beta']}"
+    elif merge_config['model_arch'] == "vanilla":
+        model_name += "_vanilla"
+
+    for length in test_list:
+        times = []
+        for rounds in range(10):
+            sub_input = inputs.input_ids[:, int(10000*rounds+10):int(10+length*1000+10000*rounds)]
+            start_time = time.time()
+            if "Zamba2" in model_name:
+                _ = model.generate(sub_input, 
+                                do_sample=False, 
+                                max_length=length*1000 + 1, 
+                                eos_token_id=[tokenizer.eos_token_id],
+                                merge_config=merge_config,
+                                use_cache=True)
+            else:
+                _, record = model.generate(sub_input, 
+                                        do_sample=False, 
+                                        max_length=length*1000 + 1, 
+                                        eos_token_id=[tokenizer.eos_token_id],
+                                        merge_config=merge_config,
+                                        use_cache=True)
+            end_time = time.time()
+            elapsed_time = end_time - start_time
+            times.append(elapsed_time)
+        
+        average_time = np.mean(times)
+        std_dev = np.std(times)
+        print(f"{model_name}, {length}k: Average {average_time:.4f} ± {std_dev:.4f} seconds")
 
 if __name__ == '__main__':
     
@@ -301,12 +386,19 @@ if __name__ == '__main__':
     parser.add_argument("--save_alphaMask", "-am", action="store_true")
     parser.add_argument("--only_eval", action="store_true")  # only eval
 
+    # test_latency tasks
+    parser.add_argument("--test_latency", action="store_true")
+
     args = parser.parse_args()
     config = load_config(args)
     # start_datetime_str = datetime.now().strftime("%Y_%m_%d__%H_%M_%S")
     if args.debug:
         print("debug")
         debug(config, args)
+        exit()
+    if args.test_latency:
+        print("test_latency")
+        test_latency(config, args)
         exit()
 
     if args.long_eval_task != "no":

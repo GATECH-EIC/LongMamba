@@ -87,17 +87,20 @@ def debug(config, args):
         inputS = file.read()
     inputs = tokenizer(inputS, return_tensors="pt").to(model.device)
     prompt_length = inputs.input_ids.size()[-1]
+    print(prompt_length)
 
-    for sc_, sc in enumerate(["0.00", "0.01", "0.02", "0.03", "0.04", "0.05", "0.06", "0.07", "0.08", "0.09", "0.10", "0.11", "0.12", "0.13", "0.14", "0.15", "0.16", "0.17", "0.18", "0.19", "0.20"]):
-        dataset_name = f"thepile_new4k-clampTop{sc}-"
+    for sc_, sc in enumerate(["0.10", "0.15", "0.20"]):
+        dataset_name = f"ablation-clampTop{sc}-"
 
-        samples = 5
+        samples = 100
         for idx in tqdm(range(samples)):
             os.makedirs(f'./artifacts/{model_name}-{dataset_name}{idx:02d}/decay', exist_ok=True)
             os.makedirs(f'./artifacts/{model_name}-{dataset_name}{idx:02d}/delta_t-thre', exist_ok=True)
             os.makedirs(f'./artifacts/{model_name}-{dataset_name}{idx:02d}/alpha', exist_ok=True)
             os.makedirs(f'./artifacts/{model_name}-{dataset_name}{idx:02d}/tA_prod', exist_ok=True)
-            sub_input = inputs.input_ids[:, int(prompt_length/samples*idx+10):int(prompt_length/samples*idx+10+4000)]
+            os.makedirs(f'./artifacts/{model_name}-{dataset_name}{idx:02d}/A', exist_ok=True)
+
+            sub_input = inputs.input_ids[:, int(prompt_length/samples*idx+10):int(prompt_length/samples*idx+10+2000)]
             if "Zamba2" in model_name:
                 _ = model.generate(sub_input, 
                                 do_sample=False, 
@@ -123,10 +126,11 @@ def debug(config, args):
             C = record['delta_t'][0][0].shape[0]
             layer_cnt = record['delta_t'].shape[0]
             for layer in tqdm(range(layer_cnt)):
-                values, _ = torch.topk(record['delta_t'][layer], k=max(1, int(record['delta_t'][layer].shape[2] * (0.01 * (sc_)))), dim=2, largest=True, sorted=False)
+                values, _ = torch.topk(record['delta_t'][layer], k=max(1, int(record['delta_t'][layer].shape[2] * (0.05 * (sc_+2)))), dim=2, largest=True, sorted=False)
                 print(values.shape)
                 record['delta_t'][layer] = torch.clamp(record['delta_t'][layer], max=values.min(dim=2, keepdim=True).values)
                 # tA = torch.exp(torch.einsum('hs,hd->hsd', record['delta_t'][layer][0], record['A'][layer])).mean(dim=-1)
+                torch.save(record['A'][layer], f"./artifacts/{model_name}-{dataset_name}{idx:02d}/A/A_layer_{layer}.pt")
                 tA = rearrange(record['delta_t'][layer], "b h l -> b l h")*record['A'][layer]
                 tA = rearrange(tA, "b (c l) h -> b h c l", c=1)
                 A_cumsum = torch.cumsum(tA, dim=-1)
@@ -142,7 +146,7 @@ def debug(config, args):
                 alpha_all = {}
                 delta_thre_all = {}
                 for length in selected_len:
-                    if length in [1e3, 2e3, 3e3, 4e3]:
+                    if length in [1e3, 2e3]:
                         alpha_all[f"{int(length/1e3)}k"] = torch.ones(C, device=model.device)
                         delta_thre_all[f"{int(length/1e3)}k"] = torch.zeros(C, device=model.device)
                     else:
@@ -173,16 +177,19 @@ def debug(config, args):
             avg_alpha = {}
             avg_decay = None
             avg_tA_prod = None
+            avg_A = None
             avg_delta_thre = {}
             
             for dir in ref_list:
                 alpha_path = os.path.join(root_path, dir, "alpha", f"alpha_layer_{layer}.pt")
                 decay_path = os.path.join(root_path, dir, "decay", f"decay_layer_{layer}.pt")
                 tA_prod_path = os.path.join(root_path, dir, "tA_prod", f"tA_prod_layer_{layer}.pt")
+                A_path = os.path.join(root_path, dir, "A", f"A_layer_{layer}.pt")
                 delta_thre_path = os.path.join(root_path, dir, "delta_t-thre", f"delta_t-thre_layer_{layer}.pt")
                 alpha = torch.load(alpha_path, map_location=model.device)
                 decay = torch.load(decay_path, map_location=model.device)
                 tA_prod = torch.load(tA_prod_path, map_location=model.device)
+                A = torch.load(A_path, map_location=model.device)
                 delta_thre = torch.load(delta_thre_path, map_location=model.device)
 
                 if avg_decay is None:
@@ -190,21 +197,25 @@ def debug(config, args):
                     avg_decay = decay.clone()/all_cnt
                     avg_delta_thre = {key: value.clone()/all_cnt for key, value in delta_thre.items()}
                     avg_tA_prod = tA_prod.clone()/all_cnt
+                    avg_A = A.clone()/all_cnt
                 else:
                     for key in alpha:
                         avg_alpha[key] += alpha[key]/ all_cnt
                         avg_delta_thre[key] += delta_thre[key]/ all_cnt
                     avg_decay += decay/ all_cnt
                     avg_tA_prod += tA_prod/ all_cnt
+                    avg_A += A/ all_cnt
             name = f"{model_name}-{dataset_name}avg"
             os.makedirs(os.path.join(root_path, name, "alpha"), exist_ok=True)
             os.makedirs(os.path.join(root_path, name, "decay"), exist_ok=True)
             os.makedirs(os.path.join(root_path, name, "tA_prod"), exist_ok=True)
             os.makedirs(os.path.join(root_path, name, "delta_t-thre"), exist_ok=True)
+            os.makedirs(os.path.join(root_path, name, "A"), exist_ok=True)
             torch.save(avg_alpha, os.path.join(root_path, name, "alpha", f"alpha_layer_{layer}.pt"))
             torch.save(avg_decay, os.path.join(root_path, name, "decay", f"decay_layer_{layer}.pt"))
             torch.save(avg_tA_prod, os.path.join(root_path, name, "tA_prod", f"tA_prod_layer_{layer}.pt"))
             torch.save(avg_delta_thre, os.path.join(root_path, name, "delta_t-thre", f"delta_t-thre_layer_{layer}.pt"))
+            torch.save(avg_A, os.path.join(root_path, name, "A", f"A_layer_{layer}.pt"))
     exit()
     
 

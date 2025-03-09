@@ -248,9 +248,10 @@ class Mamba2Layer(nn.Module):
             dt = F.softplus(dt + self.dt_bias)
 
             if inference_params.merge_config is not None and inference_params.merge_config['model_arch'] == "ours" and seqlen > 5000:
-                layers_block_type = ['m', 'm', 'm', 'm', 'm', 'm', 'g', 'm', 'm', 'm', 'm', 'm', 'g', 'm', 'm', 'm', 'm', 'm', 'g', 'm', 'm', 'm', 'm', 'm', 'g', 'm', 'm', 'm', 'm', 'm', 'g', 'm', 'm', 'm', 'm', 'm', 'g', 'm', 'm', 'm', 'm', 'm', 'g', 'm', 'm', 'm', 'm', 'g', 'm', 'm', 'm', 'g', 'm', 'm']
-                layer_past = layers_block_type[:(self.layer_idx+1)]
-                mamba_layer_idx = len([layer for layer in layer_past if layer != 'g']) - 1
+                # layers_block_type = ['m', 'm', 'm', 'm', 'm', 'm', 'g', 'm', 'm', 'm', 'm', 'm', 'g', 'm', 'm', 'm', 'm', 'm', 'g', 'm', 'm', 'm', 'm', 'm', 'g', 'm', 'm', 'm', 'm', 'm', 'g', 'm', 'm', 'm', 'm', 'm', 'g', 'm', 'm', 'm', 'm', 'm', 'g', 'm', 'm', 'm', 'm', 'g', 'm', 'm', 'm', 'g', 'm', 'm']
+                # layer_past = layers_block_type[:(self.layer_idx+1)]
+                # mamba_layer_idx = len([layer for layer in layer_past if layer != 'g']) - 1
+                mamba_layer_idx = self.layer_idx
 
                 channel_threshold = inference_params.merge_config['c']
                 # whether_bound = ("bound" in inference_params.merge_config['our_method']) or ("norm" in inference_params.merge_config['our_method'])

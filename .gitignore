@@ -35,3 +35,6 @@ hidden_state/
 subseq_*
 *mine.sh
 visualization/
+ablation_sample_num.sh
+eval.py
+para_search.sh

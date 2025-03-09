@@ -94,7 +94,7 @@ def load_model(config, args):
             model = mamba_model_class.from_pretrained('state-spaces/mamba-1.4b', device=f'cuda:{args.device}', dtype=wanted_dtype)
     elif "Zamba2" in config["base_model"]:
         from zamba2.modeling_zamba2 import Zamba2ForCausalLM
-        model = Zamba2ForCausalLM.from_pretrained(config['base_model'], torch_dtype=torch.bfloat16).to(device=f'cuda:{args.device}')
+        model = Zamba2ForCausalLM.from_pretrained(config['base_model'], torch_dtype=torch.bfloat16, revision="2269ae9c8a065c87dc1739ec99c9b81e5478082d").to(device=f'cuda:{args.device}')
         model_processor = AutoTokenizer.from_pretrained(config['base_model'], clean_up_tokenization_spaces=True)
     elif "opt" in config["base_model"]:
         from transformers import OPTForCausalLM, GPT2Tokenizer
