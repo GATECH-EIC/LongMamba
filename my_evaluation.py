@@ -143,11 +143,11 @@ if __name__ == '__main__':
     # Each new terminal's initial command ==> export HF_HOME='/research/data/zhifan/kxia_hf'
     parser = argparse.ArgumentParser()
     parser.add_argument("--device", "-d", type=str, default='0')
-    parser.add_argument("--model", type=str, default="state-spaces/mamba-130m")  # assafbk/mamba-130m-niah state-spaces/mamba-1.4b
+    parser.add_argument("--model", type=str, default="state-spaces/mamba2-1.3b")
     parser.add_argument("--model_arch", type=str, default="ours", choices=["vanilla", "ours"])
 
     # decay manipulation
-    parser.add_argument("--align_path", type=str, default="thepileavg")  # ./artifacts/ + model_name + align_path
+    parser.add_argument("--align_path", type=str, default="longmamba")  # ./artifacts/ + model_name + align_path
     parser.add_argument("--our_method", type=str, default="dt_thre")  # alpha bound offline dt_thre norm
     
     # for special_input_ppl()
