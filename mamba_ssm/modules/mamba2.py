@@ -234,23 +234,9 @@ class Mamba2(nn.Module):
             # dt alignment
             params_for_debug = {}
             dt = F.softplus(dt + self.dt_bias)
-            if inference_params.merge_config is not None and inference_params.merge_config['model_arch'] == "deci":
-            # 'peak inside' the SSM for delta_t, and then pool w.r.t it
-                dt, B, C, x, z = [rearrange(i, "b l h -> b h l") for i in [dt, B, C, x, z]]
-                resp_len = inference_params.merge_config["resp_len"] if "resp_len" in inference_params.merge_config else 0
-                not_decimated = get_non_decimated_indices(dt, resp_len, layer_num=self.layer_idx, decimation_config=inference_params.merge_config)
-                dt = dt[:,:,not_decimated]
-                B = B[:,:,not_decimated]
-                C = C[:,:,not_decimated]
-                
-                x = x[:,:,not_decimated]
-                z = z[:,:,not_decimated]
-                dt, B, C, x, z = [rearrange(i, "b h l -> b l h") for i in [dt, B, C, x, z]]
-                params_for_debug['not_decimated'] = not_decimated
 
-            if inference_params.merge_config is not None and inference_params.merge_config['model_arch'] == "ours" and seqlen > 3000:
+            if inference_params.merge_config is not None and inference_params.merge_config['model_arch'] == "ours" and int(seqlen/1e3) > 2:
                 channel_threshold = inference_params.merge_config['c']
-                # whether_bound = ("bound" in inference_params.merge_config['our_method']) or ("norm" in inference_params.merge_config['our_method'])
                 tA_prod_path = f"./artifacts/{inference_params.merge_config['align_path']}/tA_prod/tA_prod_layer_{self.layer_idx}.pt"
                 alpha_path = f"./artifacts/{inference_params.merge_config['align_path']}/alpha/alpha_layer_{self.layer_idx}.pt"
                 decay_path = f"./artifacts/{inference_params.merge_config['align_path']}/decay/decay_layer_{self.layer_idx}.pt"
@@ -285,7 +271,6 @@ class Mamba2(nn.Module):
                     dt[:, self.channel_mask] = torch.where(topk_mask, dt[:, self.channel_mask], dt[:, self.channel_mask] * self.slow_factor)
 
                 elif whether_mask and inference_params.merge_config['b'] != 0: 
-                    # available_values = [1e3, 2e3, 3e3, 4e3, 5e3, 6e3, 7e3, 8e3, 10e3, 12e3, 14e3, 16e3, 20e3, 24e3, 30e3, 36e3, 44e3, 54e3, 64e3, 80e3, 96e3, 120e3, 144e3]
                     key_num = int(min(available_values, key=lambda x: abs(seqlen - x))/1e3) if available_values != [] else None
                     if "alpha" in inference_params.merge_config['our_method']:
                         channel_alpha = alpha_all[f"{key_num}k"].to(dt.device)
@@ -294,8 +279,7 @@ class Mamba2(nn.Module):
                     elif "offline" in inference_params.merge_config['our_method']:
                         key_num_offline = int(min(available_values, key=lambda x: abs(seqlen - x))/1e3)
                         channel_alpha = alpha_all[f"{key_num_offline}k"].to(dt.device)
-                        topk_mask, dt_thre = get_channelwise_offline(delta_t=dt[:, self.channel_mask], alpha=channel_alpha[self.channel_mask]*inference_params.merge_config['b'])
-                        # self.dt_thre[f"layer_{self.layer_idx}"] = dt_thre
+                        topk_mask, _ = get_channelwise_offline(delta_t=dt[:, self.channel_mask], alpha=channel_alpha[self.channel_mask]*inference_params.merge_config['b'])
                         dt[:, self.channel_mask] = torch.where(topk_mask, dt[:, self.channel_mask], dt[:, self.channel_mask] * self.slow_factor)
                     elif "bound" in inference_params.merge_config['our_method']:
                         topk_mask = get_channelwise_topBound(delta_t=dt[:, self.channel_mask], decay=decay[self.channel_mask]*inference_params.merge_config['b'])

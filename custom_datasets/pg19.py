@@ -15,16 +15,19 @@ class PG19Dataset(Dataset):
         pg19_item['input_ids'] = item['input_tokens']
         return pg19_item
 
-def get_pg19(val_only=False):
+def get_pg19(val_only=False, model_name="mamba2"):
     
-    # val_set = torch.load('./artifacts/ppl_test/pg19/validation_set.pt')
-    val_set = torch.load('./artifacts/ppl_test/pg19/test_set.pt')
+    if "mamba2" in model_name:
+        mtype = "mamba"
+    elif "Zamba2" in model_name:
+        mtype = "zamba"
+    val_set = torch.load(f'./artifacts/ppl_test/pg19/test_set_{mtype}.pt')
     dataset_val = PG19Dataset(val_set)
 
     if val_only:
         return dataset_val
     
-    train_set = torch.load('./artifacts/ppl_test/pg19/train_set.pt')
+    train_set = torch.load(f'./artifacts/ppl_test/pg19/train_set_{mtype}.pt')
     dataset_train = PG19Dataset(train_set)
     
     return dataset_train, dataset_val

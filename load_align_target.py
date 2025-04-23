@@ -1,82 +1,16 @@
-from mamba_ssm.models.mixer_seq_simple import MambaLMHeadModel
-from mamba_ssm.utils.generation import InferenceParams
-
-from transformers import AutoTokenizer, LlamaTokenizer, LlamaForCausalLM, AutoModelForCausalLM
-import random
-import argparse
-
 import torch
-from torch.utils.data import DataLoader
-from torch.nn import CrossEntropyLoss
-import torch.distributed as dist
-import torch.multiprocessing as mp
 import os
-import shutil
-from datetime import datetime
-import numpy as np
-import pandas as pd
-import wandb
 from tqdm import tqdm
-import json
-from datasets import load_dataset
-from datasets.utils.file_utils import get_datasets_user_agent
 from custom_datasets.pg19 import *
-import pickle
-import argparse
-from tabulate import tabulate
 from einops import rearrange, repeat
 import torch.nn.functional as F
-
-from submodules.babilong.babilong_utils import TaskDatasetCustom, SentenceSampler, NoiseInjectionDataset
-from task_deci import collate_fn_niah, deci_niah, deci_niah_debug, doc_ret, deci_pg19
-from task_leval import Leval_pred, Leval_eval
-from task_longbench import get_pred, scorer_e, scorer, longbench_pred
-from load_model_from_config import load_model, get_decimation_config, validate_config
-
+from load_model_from_config import load_model, validate_config
 from utils import *
-from LEval_config import *
-from LEval_auto_eval import *
-
-from metrics import (
-    qa_f1_score,
-    rouge_zh_score,
-    qa_f1_zh_score,
-    rouge_score,
-    classification_score,
-    retrieval_score,
-    retrieval_zh_score,
-    count_score,
-    code_sim_score,
-)
-
-dataset2metric = {
-    "narrativeqa": qa_f1_score,
-    "qasper": qa_f1_score,
-    "multifieldqa_en": qa_f1_score,
-    "multifieldqa_zh": qa_f1_zh_score,
-    "hotpotqa": qa_f1_score,
-    "2wikimqa": qa_f1_score,
-    "musique": qa_f1_score,
-    "dureader": rouge_zh_score,
-    "gov_report": rouge_score,
-    "qmsum": rouge_score,
-    "multi_news": rouge_score,
-    "vcsum": rouge_zh_score,
-    "trec": classification_score,
-    "triviaqa": qa_f1_score,
-    "samsum": rouge_score,
-    "lsht": classification_score,
-    "passage_retrieval_en": retrieval_score,
-    "passage_count": count_score,
-    "passage_retrieval_zh": retrieval_zh_score,
-    "lcc": code_sim_score,
-    "repobench-p": code_sim_score,
-}
 
 
 def debug(config, args):
     set_seed(config['seed'])
-    merge_config = validate_config(config, args)  # define chunk size 1 or False
+    merge_config = validate_config(config, args) 
 
     tokenizer, model, model_name = load_model(config, args)
 
@@ -89,7 +23,8 @@ def debug(config, args):
     prompt_length = inputs.input_ids.size()[-1]
     print(prompt_length)
 
-    for sc_, sc in enumerate(["0.10", "0.15", "0.20"]):
+    # Ratio for clamp
+    for _, sc in enumerate(["0.10", "0.15", "0.20"]):
         dataset_name = f"ablation-clampTop{sc}-"
 
         samples = 100
@@ -99,9 +34,10 @@ def debug(config, args):
             os.makedirs(f'./artifacts/{model_name}-{dataset_name}{idx:02d}/alpha', exist_ok=True)
             os.makedirs(f'./artifacts/{model_name}-{dataset_name}{idx:02d}/tA_prod', exist_ok=True)
             os.makedirs(f'./artifacts/{model_name}-{dataset_name}{idx:02d}/A', exist_ok=True)
-
-            sub_input = inputs.input_ids[:, int(prompt_length/samples*idx+10):int(prompt_length/samples*idx+10+2000)]
+            
+            # different pretrained length for Zamba2 and Mamba2
             if "Zamba2" in model_name:
+                sub_input = inputs.input_ids[:, int(prompt_length/samples*idx+10):int(prompt_length/samples*idx+10+4000)]
                 _ = model.generate(sub_input, 
                                 do_sample=False, 
                                 max_length=4000 + 1, 
@@ -112,6 +48,7 @@ def debug(config, args):
                 for key in record:
                     if key != "B_t": record[key] = torch.stack([attr for attr in record[key]])
             else:
+                sub_input = inputs.input_ids[:, int(prompt_length/samples*idx+10):int(prompt_length/samples*idx+10+2000)]
                 _, record = model.generate(sub_input, 
                                         do_sample=False, 
                                         max_length=2000 + 1, 
@@ -120,16 +57,14 @@ def debug(config, args):
                                         use_cache=True)
                 for key in record:
                     if key != "B_t": record[key] = torch.stack([attr for attr in record[key][0]])
-            # torch.save(record, f"/research/data/zhifan/kxia/artifacts/params_for_debug_{model_name}_{dataset_name}{idx:02d}.pt")
             selected_len = [1e3, 2e3, 3e3, 4e3, 5e3, 6e3, 7e3, 8e3, 10e3, 12e3, 14e3, 16e3, 20e3, 24e3, 30e3, 36e3, 44e3, 54e3, 64e3, 80e3, 96e3, 120e3, 144e3, 168e3,192e3]
             record['delta_t'] = rearrange(record['delta_t'], "layer b l h -> layer b h l")
             C = record['delta_t'][0][0].shape[0]
             layer_cnt = record['delta_t'].shape[0]
             for layer in tqdm(range(layer_cnt)):
-                values, _ = torch.topk(record['delta_t'][layer], k=max(1, int(record['delta_t'][layer].shape[2] * (0.05 * (sc_+2)))), dim=2, largest=True, sorted=False)
+                values, _ = torch.topk(record['delta_t'][layer], k=max(1, int(record['delta_t'][layer].shape[2] * (float(sc)))), dim=2, largest=True, sorted=False)
                 print(values.shape)
                 record['delta_t'][layer] = torch.clamp(record['delta_t'][layer], max=values.min(dim=2, keepdim=True).values)
-                # tA = torch.exp(torch.einsum('hs,hd->hsd', record['delta_t'][layer][0], record['A'][layer])).mean(dim=-1)
                 torch.save(record['A'][layer], f"./artifacts/{model_name}-{dataset_name}{idx:02d}/A/A_layer_{layer}.pt")
                 tA = rearrange(record['delta_t'][layer], "b h l -> b l h")*record['A'][layer]
                 tA = rearrange(tA, "b (c l) h -> b h c l", c=1)
@@ -140,7 +75,6 @@ def debug(config, args):
                 for i in range(C):
                     dt_sum = torch.sum(record['delta_t'][layer][0][i])
                     dt_sum_channels.append(dt_sum)
-                # dt_sum_all.append(dt_sum_channels)
                 torch.save(torch.stack(dt_sum_channels), f"./artifacts/{model_name}-{dataset_name}{idx:02d}/decay/decay_layer_{layer}.pt")
 
                 alpha_all = {}
@@ -153,9 +87,9 @@ def debug(config, args):
                         standard_dt_sum = torch.stack(dt_sum_channels).to(model.device)
                         mod_dt = torch.sort(record['delta_t'][layer][0], descending=True, dim=1)[0].to(model.device)
                         mod_dt = torch.nn.functional.interpolate(mod_dt.unsqueeze(1), size=int(length), mode='linear', align_corners=False).squeeze(1)
-                        mod_dt_cum = torch.cumsum(mod_dt, dim=1)  # Shape [C, length]
+                        mod_dt_cum = torch.cumsum(mod_dt, dim=1)
 
-                        top_k = torch.argmax((mod_dt_cum > standard_dt_sum.unsqueeze(1)).to(torch.int), dim=1) + 1  # Shape [C]
+                        top_k = torch.argmax((mod_dt_cum > standard_dt_sum.unsqueeze(1)).to(torch.int), dim=1) + 1
                         alpha = top_k / length
                         alpha = torch.where(alpha <= 1, alpha, torch.tensor(1.0, device=model.device))  # Ensure alpha <= 1
 
@@ -163,15 +97,53 @@ def debug(config, args):
 
                         alpha_all[f"{int(length/1e3)}k"] = alpha
                         delta_thre_all[f"{int(length/1e3)}k"] = delta_thre
-                        # print(alpha.shape, delta_thre.shape, mod_dt[0][top_k[0].to(torch.int)] == delta_thre[0])
                 torch.save(alpha_all, f"./artifacts/{model_name}-{dataset_name}{idx:02d}/alpha/alpha_layer_{layer}.pt")
                 torch.save(delta_thre_all, f"./artifacts/{model_name}-{dataset_name}{idx:02d}/delta_t-thre/delta_t-thre_layer_{layer}.pt")
         
-        # compute avg align target
+        # compute avg and max -based align target
         root_path = "./artifacts"
         ref_list = [f"{model_name}-{dataset_name}{d:02d}" for d in range(samples)]
         all_cnt = len(ref_list)
         print(all_cnt)
+
+        for layer in range(layer_cnt):
+            max_alpha = {}
+            max_decay = None
+            max_tA_prod = None
+            max_A = None
+            max_delta_thre = {}
+            for dir in ref_list:
+                # Load tensors from each directory
+                alpha = torch.load(os.path.join(root_path, dir, "alpha", f"alpha_layer_{layer}.pt"), map_location=model.device)
+                decay = torch.load(os.path.join(root_path, dir, "decay", f"decay_layer_{layer}.pt"), map_location=model.device)
+                tA_prod = torch.load(os.path.join(root_path, dir, "tA_prod", f"tA_prod_layer_{layer}.pt"), map_location=model.device)
+                A = torch.load(os.path.join(root_path, dir, "A", f"A_layer_{layer}.pt"), map_location=model.device)
+                delta_thre = torch.load(os.path.join(root_path, dir, "delta_t-thre", f"delta_t-thre_layer_{layer}.pt"), map_location=model.device)
+                if max_decay is None:
+                    # Initialize maxima with the first set of values
+                    max_alpha = {k: v.clone() for k, v in alpha.items()}
+                    max_decay = decay.clone()
+                    max_tA_prod = tA_prod.clone()
+                    max_A = A.clone()
+                    max_delta_thre = {k: v.clone() for k, v in delta_thre.items()}
+                else:
+                    # Update maxima for each parameter
+                    for k in alpha:
+                        max_alpha[k] = torch.max(max_alpha[k], alpha[k])
+                        max_delta_thre[k] = torch.max(max_delta_thre[k], delta_thre[k])
+                    max_decay = torch.max(max_decay, decay)
+                    max_tA_prod = torch.max(max_tA_prod, tA_prod)
+                    max_A = torch.max(max_A, A)
+            name = f"{model_name}-{dataset_name}max"
+            # Create output directories
+            for sub in ("alpha", "decay", "tA_prod", "delta_t-thre", "A"):
+                os.makedirs(os.path.join(root_path, name, sub), exist_ok=True)
+            # Save the maximum tensors
+            torch.save(max_alpha, os.path.join(root_path, name, "alpha", f"alpha_layer_{layer}.pt"))
+            torch.save(max_decay, os.path.join(root_path, name, "decay", f"decay_layer_{layer}.pt"))
+            torch.save(max_tA_prod, os.path.join(root_path, name, "tA_prod", f"tA_prod_layer_{layer}.pt"))
+            torch.save(max_delta_thre, os.path.join(root_path, name, "delta_t-thre", f"delta_t-thre_layer_{layer}.pt"))
+            torch.save(max_A, os.path.join(root_path, name, "A", f"A_layer_{layer}.pt"))
 
         for layer in range(layer_cnt):
             avg_alpha = {}
@@ -179,7 +151,6 @@ def debug(config, args):
             avg_tA_prod = None
             avg_A = None
             avg_delta_thre = {}
-            
             for dir in ref_list:
                 alpha_path = os.path.join(root_path, dir, "alpha", f"alpha_layer_{layer}.pt")
                 decay_path = os.path.join(root_path, dir, "decay", f"decay_layer_{layer}.pt")
@@ -191,7 +162,6 @@ def debug(config, args):
                 tA_prod = torch.load(tA_prod_path, map_location=model.device)
                 A = torch.load(A_path, map_location=model.device)
                 delta_thre = torch.load(delta_thre_path, map_location=model.device)
-
                 if avg_decay is None:
                     avg_alpha = {key: value.clone()/all_cnt for key, value in alpha.items()}
                     avg_decay = decay.clone()/all_cnt

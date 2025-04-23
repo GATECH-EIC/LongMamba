@@ -4,14 +4,15 @@ from datasets import load_dataset
 import argparse
 from transformers import AutoTokenizer
 from itertools import islice
-# model_processor = AutoTokenizer.from_pretrained("EleutherAI/gpt-neox-20b")
-model_processor = AutoTokenizer.from_pretrained("Zyphra/Zamba2-1.2B")
+model_processor_mamba = AutoTokenizer.from_pretrained("EleutherAI/gpt-neox-20b")
+model_processor_zamba = AutoTokenizer.from_pretrained("Zyphra/Zamba2-1.2B")
 
-def main(args):
-    #if args.eval_only:
+def main(tokenizer_type="mamba"):
     splits = ['test']
-    # else:
-    #     splits = ['test', 'validation', 'train']
+    if tokenizer_type == "mamba":
+        model_processor = model_processor_mamba
+    elif tokenizer_type == "zamba":
+        model_processor = model_processor_zamba
     
     for split in splits:
         print(f'Tokenizing {split} split')
@@ -28,16 +29,15 @@ def main(args):
             i+=1
             if i%1000 == 0 and i>0:
                 print(f'saving checkpoint after {i} examples')
-                torch.save(tokenized_ds, f'./artifacts/ppl_test/{split}_set_zamba.pt')
+                torch.save(tokenized_ds, f'./artifacts/ppl_test/{split}_set_{tokenizer_type}.pt')
             if i>2001:
                 break
         print("tokenized_ds: ", len(tokenized_ds))
-        torch.save(tokenized_ds, f'./artifacts/ppl_test/{split}_set_zamba.pt')
+        torch.save(tokenized_ds, f'./artifacts/ppl_test/{split}_set_{tokenizer_type}.pt')
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    # parser.add_argument("--eval_only", action=argparse.BooleanOptionalAction)
     args = parser.parse_args()
 
-    main(args)
+    main("mamba")

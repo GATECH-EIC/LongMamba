@@ -9,7 +9,6 @@ build/
 *.egg-info/
 build/
 **.so
-*.txt
 
 tmp*/*
 benchmarks/*
@@ -32,7 +31,6 @@ search-abc.sh
 output/
 multi_seq/
 hidden_state/
-subseq_*
 *mine.sh
 visualization/
 ablation_sample_num.sh
