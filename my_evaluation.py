@@ -154,7 +154,7 @@ if __name__ == '__main__':
     parser.add_argument("--perplexity", "-ppl", action="store_true")
     parser.add_argument("--sample_path", type=str, default="subseq_lambada.txt")  # .txt dataset file path
 
-    # DeciMamba tasks
+    # DeciMamba PG19 tasks
     parser.add_argument("--deci_task", "-dt", type=str, default='no')    # choices=["no", "pg19", "yes"]
     # longBench tasks
     parser.add_argument("--long_eval_task", "-lt", type=str, default='no')    # choices=["no", "e", "yes"]
