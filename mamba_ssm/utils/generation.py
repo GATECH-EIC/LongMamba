@@ -242,7 +242,7 @@ def decode(
     def should_stop(current_token, inference_params):
         if inference_params.seqlen_offset == 0:
             return False
-        if eos_token_id is not None and (current_token in eos_token_id or current_token == eos_token_id):
+        if eos_token_id is not None and (current_token == eos_token_id or current_token in eos_token_id):
             return True
         if inference_params.seqlen_offset >= max_length - 1:
             return True
