@@ -303,9 +303,8 @@ class Mamba2(nn.Module):
                 params_for_debug['A'] = A.clone().cpu()
                 params_for_debug['Sb_x'] = B.clone().cpu()  # B before discretization
                 params_for_debug['C'] = C.clone().cpu()
-                # params_for_debug['delta_t'] = F.softplus(dt.clone() + self.dt_bias.clone()).cpu()
                 params_for_debug['delta_t'] = dt.clone().cpu()
-                print("no extra activation")
+                print("Save parameters mamba2 debug")
                 params_for_debug['B_t'] = None
 
             y = mamba_chunk_scan_combined(
